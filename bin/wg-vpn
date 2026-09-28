@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SELF_DIR/../lib/common.sh" ]; then
+    LIB_DIR="$(cd "$SELF_DIR/../lib" && pwd)"
+else
+    LIB_DIR="/usr/local/lib/wg-vpn"
+fi
+
+source "$LIB_DIR/common.sh"
+source "$LIB_DIR/config.sh"
+source "$LIB_DIR/networking.sh"
+source "$LIB_DIR/firewall.sh"
+source "$LIB_DIR/clients.sh"
+source "$LIB_DIR/mtu.sh"
+source "$LIB_DIR/backup.sh"
+
+VERSION="0.1.0"
+
+usage() {
+    cat <<'EOF'
+wg-vpn - lightweight WireGuard VPN manager
+
+Usage:
+  wg-vpn add NAME [--full|--split|--routes CIDRS] [--dns SERVERS]
+                  [--keepalive SECONDS|--no-keepalive] [--mtu MTU]
+  wg-vpn revoke NAME
+  wg-vpn remove NAME
+  wg-vpn list
+  wg-vpn show NAME
+  wg-vpn qr NAME
+
+  wg-vpn status
+  wg-vpn diagnose
+  wg-vpn restart
+
+  wg-vpn optimize
+  wg-vpn mtu-test
+  wg-vpn mtu-set MTU
+  wg-vpn mtu-auto
+
+  wg-vpn backup [DIRECTORY]
+  wg-vpn restore BACKUP.tar.gz
+
+  wg-vpn version
+EOF
+}
+
+status_cmd() {
+    local total=0 active=0 meta peers=0
+    for meta in "$WGVPN_CLIENT_META_DIR"/*.env; do
+        [ -e "$meta" ] || continue
+        total=$((total + 1))
+        unset CLIENT_STATUS
+        source "$meta"
+        [ "${CLIENT_STATUS:-}" != "active" ] || active=$((active + 1))
+    done
+    if ip link show "$WG_INTERFACE" >/dev/null 2>&1; then
+        peers="$(wg show "$WG_INTERFACE" peers 2>/dev/null | wc -l)"
+    fi
+
+    echo "wg-vpn"
+    echo
+    echo "Interface:        $WG_INTERFACE"
+    echo "Service:          $(systemctl is-active "wg-quick@$WG_INTERFACE" 2>/dev/null || true)"
+    echo "Listen port:      $WG_PORT/UDP"
+    echo "Endpoint:         $ENDPOINT_HOST:$WG_PORT"
+    echo "VPN subnet:       $WG_IPV4_SUBNET"
+    echo "Public interface: $PUBLIC_INTERFACE"
+    echo "Firewall backend: $(detect_firewall_backend)"
+    echo "MTU:              ${FORCED_MTU:-automatic}"
+    echo "IPv6:             $([ "$IPV6_ENABLED" = "1" ] && echo enabled || echo disabled)"
+    echo "Clients:          $active active / $total saved"
+    echo "Live peers:       $peers"
+}
+
+diagnose_cmd() {
+    local failures=0
+    echo "wg-vpn diagnostics"
+    echo
+
+    if systemctl is-active --quiet "wg-quick@$WG_INTERFACE"; then
+        echo "[OK] WireGuard service active"
+    else
+        echo "[!!] WireGuard service is not active"; failures=$((failures + 1))
+    fi
+
+    if ip link show "$PUBLIC_INTERFACE" >/dev/null 2>&1; then
+        echo "[OK] Public interface $PUBLIC_INTERFACE exists"
+    else
+        echo "[!!] Public interface $PUBLIC_INTERFACE missing"; failures=$((failures + 1))
+    fi
+
+    if [ "$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 0)" = "1" ]; then
+        echo "[OK] IPv4 forwarding enabled"
+    else
+        echo "[!!] IPv4 forwarding disabled"; failures=$((failures + 1))
+    fi
+
+    if firewall_rules_present; then
+        echo "[OK] wg-vpn firewall/NAT chains present"
+    else
+        echo "[!!] wg-vpn firewall/NAT chains missing"; failures=$((failures + 1))
+    fi
+
+    if ss -H -lun 2>/dev/null | grep -Eq "[:.]${WG_PORT}[[:space:]]|[:.]${WG_PORT}$"; then
+        echo "[OK] UDP $WG_PORT is listening"
+    else
+        echo "[!!] UDP $WG_PORT is not visible as listening"; failures=$((failures + 1))
+    fi
+
+    if ip -4 route get 1.1.1.1 >/dev/null 2>&1; then
+        echo "[OK] IPv4 default routing available"
+    else
+        echo "[!!] IPv4 default routing unavailable"; failures=$((failures + 1))
+    fi
+
+    echo "[OK] Firewall ownership is isolated to WGVPN_* chains"
+    echo "[OK] No global TCP/qdisc performance tuning managed by wg-vpn"
+    echo
+    if [ "$failures" -eq 0 ]; then
+        echo "No obvious server-side problems detected."
+    else
+        echo "Detected $failures issue(s)."
+        return 1
+    fi
+}
+
+add_cmd() {
+    [ "$#" -ge 1 ] || die "Usage: wg-vpn add NAME [options]"
+    local name="$1"; shift
+    local mode="" routes="" dns="" keepalive="25" mtu=""
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --full) mode="full"; routes="" ;;
+            --split) mode="split"; routes="" ;;
+            --routes)
+                [ "$#" -ge 2 ] || die "--routes requires a CIDR list."
+                mode="custom"; routes="$2"; shift
+                ;;
+            --dns)
+                [ "$#" -ge 2 ] || die "--dns requires a value."
+                dns="$2"; shift
+                ;;
+            --keepalive)
+                [ "$#" -ge 2 ] || die "--keepalive requires seconds."
+                keepalive="$2"; shift
+                ;;
+            --no-keepalive) keepalive="0" ;;
+            --mtu)
+                [ "$#" -ge 2 ] || die "--mtu requires a value."
+                mtu="$2"; shift
+                ;;
+            *) die "Unknown add option: $1" ;;
+        esac
+        shift
+    done
+    [[ "$keepalive" =~ ^[0-9]+$ ]] || die "Keepalive must be numeric."
+    [ -z "$mtu" ] || [[ "$mtu" =~ ^[0-9]+$ ]] || die "MTU must be numeric."
+    add_client "$name" "$mode" "$routes" "$dns" "$keepalive" "$mtu"
+}
+
+main() {
+    local cmd="${1:-help}"
+    case "$cmd" in
+        help|-h|--help) usage ;;
+        version|--version) echo "wg-vpn $VERSION" ;;
+        *)
+            require_root
+            load_config
+            case "$cmd" in
+                add) shift; add_cmd "$@" ;;
+                revoke) [ "$#" -eq 2 ] || die "Usage: wg-vpn revoke NAME"; revoke_client "$2" ;;
+                remove) [ "$#" -eq 2 ] || die "Usage: wg-vpn remove NAME"; remove_client "$2" ;;
+                list) list_clients ;;
+                show) [ "$#" -eq 2 ] || die "Usage: wg-vpn show NAME"; show_client "$2" ;;
+                qr) [ "$#" -eq 2 ] || die "Usage: wg-vpn qr NAME"; qr_client "$2" ;;
+                status) status_cmd ;;
+                diagnose) diagnose_cmd ;;
+                restart)
+                    systemctl restart "wg-quick@$WG_INTERFACE"
+                    firewall_apply
+                    status_cmd
+                    ;;
+                optimize) optimize_wg ;;
+                mtu-test) mtu_test ;;
+                mtu-set) [ "$#" -eq 2 ] || die "Usage: wg-vpn mtu-set MTU"; apply_wg_mtu "$2" ;;
+                mtu-auto) clear_wg_mtu ;;
+                backup) backup_config "${2:-/root}" ;;
+                restore) [ "$#" -eq 2 ] || die "Usage: wg-vpn restore FILE"; restore_config "$2" ;;
+                firewall-apply) firewall_apply ;;
+                firewall-remove) firewall_remove ;;
+                *) usage; exit 1 ;;
+            esac
+            ;;
+    esac
+}
+
+main "$@"
