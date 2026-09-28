@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bash syntax
+        run: |
+          bash -n install.sh
+          bash -n uninstall.sh
+          bash -n bin/wg-vpn
+          for file in lib/*.sh; do
+            bash -n "$file"
+          done
+
+      - name: ShellCheck
+        run: |
+          shellcheck --severity=error -e SC1090,SC1091 install.sh uninstall.sh bin/wg-vpn lib/*.sh
