@@ -20,14 +20,14 @@ ask() {
         else
             printf '%s: ' "$label" > /dev/tty
         fi
-        IFS= read -r value < /dev/tty || value=""
+        IFS= read -r value < /dev/tty || die "Input ended unexpectedly while waiting for: $label"
     else
         if [ -n "$default" ]; then
             printf '%s [%s]: ' "$label" "$default" >&2
         else
             printf '%s: ' "$label" >&2
         fi
-        IFS= read -r value || value=""
+        IFS= read -r value || die "Interactive input is required for: $label"
     fi
 
     INSTALL_PROMPT_RESULT="${value:-$default}"
@@ -46,15 +46,29 @@ yesno() {
         [ -n "$value" ] || value="n"
     fi
 
-    [[ "$value" =~ ^[Yy]$ ]]
+    case "$value" in
+        y|Y|yes|YES|Yes) return 0 ;;
+        n|N|no|NO|No) return 1 ;;
+        *) die "Please answer yes or no." ;;
+    esac
 }
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
-is_private_ipv4() {
+is_nonpublic_ipv4() {
     local ip="$1"
+    [[ "$ip" =~ ^0\. ]] ||
     [[ "$ip" =~ ^10\. ]] ||
+    [[ "$ip" =~ ^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\. ]] ||
+    [[ "$ip" =~ ^127\. ]] ||
+    [[ "$ip" =~ ^169\.254\. ]] ||
+    [[ "$ip" =~ ^172\.(1[6-9]|2[0-9]|3[01])\. ]] ||
+    [[ "$ip" =~ ^192\.0\.0\. ]] ||
+    [[ "$ip" =~ ^192\.0\.2\. ]] ||
     [[ "$ip" =~ ^192\.168\. ]] ||
-    [[ "$ip" =~ ^172\.(1[6-9]|2[0-9]|3[01])\. ]]
+    [[ "$ip" =~ ^198\.(1[89])\. ]] ||
+    [[ "$ip" =~ ^198\.51\.100\. ]] ||
+    [[ "$ip" =~ ^203\.0\.113\. ]] ||
+    [[ "$ip" =~ ^(22[4-9]|23[0-9]|24[0-9]|25[0-5])\. ]]
 }
 
 choose_wg_interface() {
@@ -101,7 +115,7 @@ detect_endpoint() {
     local source_ip public_ip=""
     source_ip="$(detect_source_ipv4)"
 
-    if [ -n "$source_ip" ] && ! is_private_ipv4 "$source_ip"; then
+    if [ -n "$source_ip" ] && ! is_nonpublic_ipv4 "$source_ip"; then
         echo "$source_ip"
         return 0
     fi
@@ -113,6 +127,46 @@ detect_endpoint() {
     fi
 
     return 1
+}
+
+stage_management_files() {
+    local temp="$1" file
+    mkdir -p "$temp/lib" "$temp/bin"
+
+    for file in common.sh config.sh networking.sh firewall.sh clients.sh mtu.sh backup.sh; do
+        curl -fsSL "$REPO_RAW/lib/$file" -o "$temp/lib/$file"
+        bash -n "$temp/lib/$file"
+    done
+
+    curl -fsSL "$REPO_RAW/bin/wg-vpn" -o "$temp/bin/wg-vpn"
+    bash -n "$temp/bin/wg-vpn"
+}
+
+install_staged_management_files() {
+    local temp="$1" file
+    mkdir -p "$INSTALL_LIB"
+    for file in common.sh config.sh networking.sh firewall.sh clients.sh mtu.sh backup.sh; do
+        install -m 755 "$temp/lib/$file" "$INSTALL_LIB/$file"
+    done
+    install -m 755 "$temp/bin/wg-vpn" "$INSTALL_BIN"
+}
+
+validate_selected_resources() {
+    [ -n "$PUBLIC_INTERFACE" ] || die "A public network interface is required."
+    ip link show dev "$PUBLIC_INTERFACE" >/dev/null 2>&1 || die "Interface $PUBLIC_INTERFACE does not exist."
+
+    valid_interface_name "$WG_INTERFACE" || die "Invalid WireGuard interface name."
+    [ ! -e "$WG_ROOT/${WG_INTERFACE}.conf" ] || die "$WG_ROOT/${WG_INTERFACE}.conf already exists. Refusing to overwrite it."
+    ! ip link show "$WG_INTERFACE" >/dev/null 2>&1 || die "Interface $WG_INTERFACE already exists. Refusing to take it over."
+
+    valid_ipv4_24_cidr "$WG_IPV4_SUBNET" || die "V1 currently requires a valid IPv4 /24 subnet."
+    ! subnet_conflicts "$WG_IPV4_SUBNET" || die "$WG_IPV4_SUBNET already appears in the routing table."
+
+    valid_port "$WG_PORT" || die "Invalid UDP port."
+    ! udp_port_in_use "$WG_PORT" || die "UDP port $WG_PORT is already in use."
+
+    [ -n "$ENDPOINT_HOST" ] || die "A public IP or DNS endpoint is required."
+    [ -z "${FORCED_MTU:-}" ] || valid_mtu "$FORCED_MTU" || die "MTU must be between 1280 and 9000."
 }
 
 [ "$(id -u)" -eq 0 ] || die "Run as root: curl ... | sudo bash"
@@ -130,18 +184,20 @@ if [ -f "$STATE_DIR/config.env" ]; then
     echo "Updating CLI and management modules only..."
     echo
 
-    mkdir -p "$INSTALL_LIB"
+    command_exists flock || {
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends util-linux
+    }
 
-    for file in common.sh config.sh networking.sh firewall.sh clients.sh mtu.sh backup.sh; do
-        curl -fsSL "$REPO_RAW/lib/$file" -o "$INSTALL_LIB/$file"
-        chmod 755 "$INSTALL_LIB/$file"
-    done
+    update_temp="$(mktemp -d)"
+    trap 'rm -rf "$update_temp"' EXIT
+    stage_management_files "$update_temp"
+    install_staged_management_files "$update_temp"
 
-    curl -fsSL "$REPO_RAW/bin/wg-vpn" -o "$INSTALL_BIN"
-    chmod 755 "$INSTALL_BIN"
+    "$INSTALL_BIN" firewall-apply
 
     echo "wg-vpn management files updated."
-    echo "Existing server keys, clients, WireGuard configuration, firewall settings, and VPN addresses were not replaced."
+    echo "Existing server keys, clients, WireGuard configuration, VPN addresses, and unrelated firewall objects were not replaced."
     echo
     "$INSTALL_BIN" status
     exit 0
@@ -162,8 +218,9 @@ echo
 ask "Mode" "1"
 setup_choice="$INSTALL_PROMPT_RESULT"
 case "$setup_choice" in
+    1|automatic|"") SETUP_MODE="automatic" ;;
     2|manual|advanced) SETUP_MODE="manual" ;;
-    *) SETUP_MODE="automatic" ;;
+    *) die "Invalid setup mode: $setup_choice" ;;
 esac
 
 echo
@@ -171,18 +228,15 @@ echo "Installing required packages..."
 echo
 
 apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends     wireguard     wireguard-tools     qrencode     iptables     iproute2     ca-certificates     curl
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends wireguard wireguard-tools qrencode iptables iproute2 ca-certificates curl util-linux
 
-mkdir -p "$INSTALL_LIB" "$WG_ROOT"
+mkdir -p "$WG_ROOT"
 chmod 700 "$WG_ROOT"
 
-for file in common.sh config.sh networking.sh firewall.sh clients.sh mtu.sh backup.sh; do
-    curl -fsSL "$REPO_RAW/lib/$file" -o "$INSTALL_LIB/$file"
-    chmod 755 "$INSTALL_LIB/$file"
-done
-
-curl -fsSL "$REPO_RAW/bin/wg-vpn" -o "$INSTALL_BIN"
-chmod 755 "$INSTALL_BIN"
+install_temp="$(mktemp -d)"
+trap 'rm -rf "$install_temp"' EXIT
+stage_management_files "$install_temp"
+install_staged_management_files "$install_temp"
 
 source "$INSTALL_LIB/common.sh"
 source "$INSTALL_LIB/config.sh"
@@ -256,8 +310,7 @@ if [ "$SETUP_MODE" = "manual" ]; then
     case "$mtu_input" in
         automatic|auto|"") FORCED_MTU="" ;;
         *)
-            [[ "$mtu_input" =~ ^[0-9]+$ ]] || die "MTU must be 'automatic' or a number."
-            [ "$mtu_input" -ge 1280 ] && [ "$mtu_input" -le 9000 ] || die "MTU must be between 1280 and 9000."
+            valid_mtu "$mtu_input" || die "MTU must be between 1280 and 9000, or 'automatic'."
             FORCED_MTU="$mtu_input"
             ;;
     esac
@@ -300,6 +353,8 @@ else
 
     FORCED_MTU=""
 fi
+
+validate_selected_resources
 
 WG_SERVER_IPV4="$(ipv4_prefix_from_cidr "$WG_IPV4_SUBNET").1"
 
@@ -345,7 +400,14 @@ echo "  IPv6:                $([ "$IPV6_ENABLED" = "1" ] && echo enabled || echo
 echo "  MTU:                 ${FORCED_MTU:-automatic}"
 echo
 
+validate_selected_resources
 safe_mkdirs
+
+SERVER_CONF="$WG_ROOT/${WG_INTERFACE}.conf"
+if ! (set -o noclobber; : > "$SERVER_CONF") 2>/dev/null; then
+    die "Server configuration appeared during installation; refusing to overwrite: $SERVER_CONF"
+fi
+chmod 600 "$SERVER_CONF"
 
 PREVIOUS_IPV4_FORWARD="$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 0)"
 PREVIOUS_IPV6_FORWARD="$(sysctl -n net.ipv6.conf.all.forwarding 2>/dev/null || echo 0)"
@@ -367,9 +429,9 @@ write_env_file "$WGVPN_CONFIG"     "WG_INTERFACE=$WG_INTERFACE"     "WG_IPV4_SUB
     echo "ListenPort = $WG_PORT"
     [ -z "$FORCED_MTU" ] || echo "MTU = $FORCED_MTU"
     echo "PrivateKey = $SERVER_PRIVATE_KEY"
-} > "$WG_ROOT/${WG_INTERFACE}.conf"
+} > "$SERVER_CONF"
 
-chmod 600 "$WG_ROOT/${WG_INTERFACE}.conf"
+chmod 600 "$SERVER_CONF"
 
 enable_forwarding
 
