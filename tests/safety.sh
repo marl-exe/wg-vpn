@@ -151,6 +151,9 @@ if grep -nF 'tar -C / -czf' lib/backup.sh; then
     fail "backup still archives the entire live WireGuard directory"
 fi
 
+grep -Fq 'prompt_yes_no "Remove wg-vpn configuration and clients?" "n"' uninstall.sh ||
+    fail "uninstall does not call the shared confirmation prompt with required arguments"
+
 grep -Fq 'REPO_COMMIT' install.sh || fail "installer does not pin a repository commit"
 grep -Fq 'install_firewall_service_unit' install.sh || fail "installer bypasses managed systemd-unit ownership helper"
 
