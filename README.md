@@ -19,9 +19,12 @@ The current V1 has been successfully tested on a real Ubuntu VPS with a mobile W
 - DNS selection with Cloudflare, Google, Quad9, AdGuard, system DNS, or custom resolvers
 - Automatic MTU by default, with diagnostics and MTU testing
 - `PersistentKeepalive = 25` only where useful
-- Isolated firewall chains; never flush the host firewall
-- Live peer updates with `wg syncconf` / `wg set`
-- Backup and restore support
+- Per-installation, ownership-verified firewall chains; never flush the host firewall
+- Live peer updates with `wg syncconf`
+- Transactional client add/revoke with rollback on sync failure
+- Process locking for mutating operations
+- Scoped backup/restore that preserves unrelated WireGuard configuration
+- Uninstall removes only files/rules owned by wg-vpn
 
 ## Install
 
@@ -37,7 +40,7 @@ To update an existing installation, rerun the same command:
 curl -fsSL https://raw.githubusercontent.com/marl-exe/wg-vpn/main/install.sh | sudo bash
 ```
 
-When an existing `wg-vpn` installation is detected, the installer updates only the CLI and management modules. Existing server keys, client definitions, WireGuard configuration, VPN addresses, and firewall settings are preserved.
+When an existing `wg-vpn` installation is detected, the installer stages and syntax-checks the CLI/management modules before replacing them. Existing server keys, client definitions, WireGuard configuration, and VPN addresses are preserved. Older fixed-name `WGVPN_*` firewall chains are migrated only when their exact legacy rule layout matches what wg-vpn previously created; otherwise they are left untouched.
 
 ### Installer behavior
 
@@ -145,9 +148,15 @@ During installation and client creation:
 
 `wg-vpn` does **not** flush `INPUT`, `FORWARD`, Docker chains, or the nftables ruleset.
 
-It creates WireGuard-owned chains/rules only, scopes NAT to the VPN subnet and detected public interface, and removes only the rules it owns during uninstall.
+Each installation derives unique firewall-chain names from its WireGuard server public key and places an ownership marker in those chains. An existing chain is never flushed or deleted unless wg-vpn can verify that marker.
+
+NAT is scoped to the configured VPN subnet and detected public interface. Upgrade cleanup for the older fixed-name `WGVPN_INPUT`, `WGVPN_FORWARD`, and `WGVPN_NAT` chains occurs only if every legacy chain exactly matches wg-vpn's former rule layout.
 
 Modern Ubuntu/Debian commonly expose the nftables backend through `iptables-nft`; `wg-vpn` detects and reports whether the active frontend is nft, legacy, or unknown.
+
+The project rule is:
+
+> wg-vpn may delete only objects that wg-vpn itself created.
 
 ## MTU and latency
 
@@ -160,6 +169,16 @@ wg-vpn optimize
 ```
 
 `optimize` is intentionally conservative: it reports issues and only applies WireGuard-specific fixes. It does not apply global TCP buffer, congestion-control, or random sysctl tuning.
+
+## Backup and restore safety
+
+Backups contain only the active wg-vpn server configuration, wg-vpn metadata, and client configurations registered in that metadata. They do not archive the entire live `/etc/wireguard` directory.
+
+Restore rejects absolute/traversal paths, symlinks, hardlinks, and special files. V1 restore requires the backup to use the current WireGuard interface name. Unrelated WireGuard interfaces and unrelated files under `/etc/wireguard` are preserved.
+
+If activation of a restored configuration fails, wg-vpn attempts to restore the configuration that was active immediately before the restore.
+
+Mutating CLI operations use a lock so two add/remove/restore/firewall operations cannot modify wg-vpn state concurrently.
 
 ## Runtime files
 
@@ -179,7 +198,7 @@ wg-vpn optimize
 
 ## Testing status
 
-V1 has completed a successful real-world installation and connectivity test with a mobile client. The test verified:
+The original V1 networking path has completed a successful real-world installation and connectivity test on an Ubuntu VPS with a mobile WireGuard client. That test verified:
 
 - WireGuard service startup
 - Full-tunnel Internet routing
@@ -190,7 +209,9 @@ V1 has completed a successful real-world installation and connectivity test with
 - iptables-nft firewall integration
 - Automatic MTU operation
 
-Further testing across additional VPS providers, container types, IPv6 environments, and unusual firewall configurations is still recommended before treating every environment as production-validated.
+The current hardened `0.2.x` code also passes Bash syntax checks, ShellCheck, and repository safety regression tests covering MTU/CIDR validation, unsafe state-file rejection, firewall-flush guards, whole-`/etc/wireguard` deletion guards, and piped-installer prompt regressions.
+
+The new ownership, transactional restore/client, and failure-rollback paths still need broader runtime testing on additional clean VPSes before being treated as production-validated across environments.
 
 ## License
 
