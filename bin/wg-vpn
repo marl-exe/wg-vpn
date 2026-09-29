@@ -16,7 +16,7 @@ source "$LIB_DIR/clients.sh"
 source "$LIB_DIR/mtu.sh"
 source "$LIB_DIR/backup.sh"
 
-VERSION="0.1.0"
+VERSION="0.1.1"
 
 usage() {
     cat <<'EOF'
@@ -47,8 +47,53 @@ Usage:
 EOF
 }
 
+format_handshake_age() {
+    local timestamp="${1:-0}" now age days hours mins secs
+
+    if [ -z "$timestamp" ] || [ "$timestamp" = "0" ]; then
+        echo "never"
+        return
+    fi
+
+    now="$(date +%s)"
+    age=$((now - timestamp))
+    [ "$age" -ge 0 ] || age=0
+
+    days=$((age / 86400))
+    hours=$(((age % 86400) / 3600))
+    mins=$(((age % 3600) / 60))
+    secs=$((age % 60))
+
+    if [ "$days" -gt 0 ]; then
+        printf '%dd %dh ago' "$days" "$hours"
+    elif [ "$hours" -gt 0 ]; then
+        printf '%dh %dm ago' "$hours" "$mins"
+    elif [ "$mins" -gt 0 ]; then
+        printf '%dm %ds ago' "$mins" "$secs"
+    else
+        printf '%ds ago' "$secs"
+    fi
+}
+
 status_cmd() {
     local total=0 active=0 meta peers=0
+    local public_key endpoint latest rx tx
+    declare -A peer_endpoint=()
+    declare -A peer_latest=()
+    declare -A peer_rx=()
+    declare -A peer_tx=()
+
+    if ip link show "$WG_INTERFACE" >/dev/null 2>&1; then
+        while IFS=$'\t' read -r public_key _ endpoint _ latest rx tx _; do
+            [ -n "$public_key" ] || continue
+            peer_endpoint["$public_key"]="$endpoint"
+            peer_latest["$public_key"]="$latest"
+            peer_rx["$public_key"]="$rx"
+            peer_tx["$public_key"]="$tx"
+            peers=$((peers + 1))
+        done < <(wg show "$WG_INTERFACE" dump 2>/dev/null | tail -n +2)
+    fi
+
     for meta in "$WGVPN_CLIENT_META_DIR"/*.env; do
         [ -e "$meta" ] || continue
         total=$((total + 1))
@@ -56,9 +101,6 @@ status_cmd() {
         source "$meta"
         [ "${CLIENT_STATUS:-}" != "active" ] || active=$((active + 1))
     done
-    if ip link show "$WG_INTERFACE" >/dev/null 2>&1; then
-        peers="$(wg show "$WG_INTERFACE" peers 2>/dev/null | wc -l)"
-    fi
 
     echo "wg-vpn"
     echo
@@ -73,6 +115,31 @@ status_cmd() {
     echo "IPv6:             $([ "$IPV6_ENABLED" = "1" ] && echo enabled || echo disabled)"
     echo "Clients:          $active active / $total saved"
     echo "Live peers:       $peers"
+
+    if [ "$total" -eq 0 ]; then
+        return
+    fi
+
+    echo
+    echo "Clients"
+    echo
+    printf '%-16s %-15s %-9s %-24s %-14s %-11s %-11s\n'         "NAME" "VPN IP" "STATUS" "ENDPOINT" "HANDSHAKE" "RX" "TX"
+
+    for meta in "$WGVPN_CLIENT_META_DIR"/*.env; do
+        [ -e "$meta" ] || continue
+
+        unset CLIENT_NAME CLIENT_IPV4 CLIENT_STATUS CLIENT_PUBLIC_KEY
+        source "$meta"
+
+        endpoint="${peer_endpoint[$CLIENT_PUBLIC_KEY]-}"
+        latest="${peer_latest[$CLIENT_PUBLIC_KEY]-0}"
+        rx="${peer_rx[$CLIENT_PUBLIC_KEY]-0}"
+        tx="${peer_tx[$CLIENT_PUBLIC_KEY]-0}"
+
+        [ -n "$endpoint" ] && [ "$endpoint" != "(none)" ] || endpoint="-"
+
+        printf '%-16s %-15s %-9s %-24s %-14s %-11s %-11s\n'             "$CLIENT_NAME"             "$CLIENT_IPV4"             "$CLIENT_STATUS"             "$endpoint"             "$(format_handshake_age "$latest")"             "$(format_bytes "$rx")"             "$(format_bytes "$tx")"
+    done
 }
 
 diagnose_cmd() {
