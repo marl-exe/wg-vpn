@@ -102,7 +102,7 @@ validate_server_config_file() {
 
     cp -a "$file" "$staged" || { rm -rf "$tempdir"; return 1; }
 
-    if ! (cd "$tempdir" && wg-quick strip "${WG_INTERFACE}.conf" >/dev/null 2>"$error_file"); then
+    if ! (cd "$tempdir" && wg-quick strip "./${WG_INTERFACE}.conf" >/dev/null 2>"$error_file"); then
         rc=1
         if [ -s "$error_file" ]; then
             warn "wg-quick validation error:"
