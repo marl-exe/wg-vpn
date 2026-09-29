@@ -32,6 +32,7 @@ apply_wg_mtu() {
     valid_mtu "$mtu" || die "MTU must be between 1280 and 9000."
 
     conf="$WG_ROOT/${WG_INTERFACE}.conf"
+    server_config_owned || die "Refusing to modify server config whose key does not match wg-vpn metadata."
     if grep -q '^MTU[[:space:]]*=' "$conf"; then
         sed -i "s/^MTU[[:space:]]*=.*/MTU = $mtu/" "$conf"
     else
@@ -44,6 +45,7 @@ apply_wg_mtu() {
         load_client_meta_file "$meta" || die "Invalid or unsafe client metadata: $meta"
         client_conf="$(client_config_file "$CLIENT_NAME")"
         if [ -f "$client_conf" ]; then
+            client_config_owned "$CLIENT_NAME" || die "Refusing to modify client config whose key does not match metadata: $client_conf"
             if grep -q '^MTU[[:space:]]*=' "$client_conf"; then
                 sed -i "s/^MTU[[:space:]]*=.*/MTU = $mtu/" "$client_conf"
             else
@@ -61,13 +63,17 @@ apply_wg_mtu() {
 clear_wg_mtu() {
     local conf meta client_conf
     conf="$WG_ROOT/${WG_INTERFACE}.conf"
+    server_config_owned || die "Refusing to modify server config whose key does not match wg-vpn metadata."
     sed -i '/^MTU[[:space:]]*=/d' "$conf"
     for meta in "$WGVPN_CLIENT_META_DIR"/*.env; do
         [ -e "$meta" ] || continue
         unset CLIENT_NAME
         load_client_meta_file "$meta" || die "Invalid or unsafe client metadata: $meta"
         client_conf="$(client_config_file "$CLIENT_NAME")"
-        [ ! -f "$client_conf" ] || sed -i '/^MTU[[:space:]]*=/d' "$client_conf"
+        if [ -f "$client_conf" ]; then
+            client_config_owned "$CLIENT_NAME" || die "Refusing to modify client config whose key does not match metadata: $client_conf"
+            sed -i '/^MTU[[:space:]]*=/d' "$client_conf"
+        fi
         update_env_value "$meta" "CLIENT_MTU" ""
     done
     update_env_value "$WGVPN_CONFIG" "FORCED_MTU" ""
