@@ -37,10 +37,7 @@ prompt_dns() {
             custom="$PROMPT_RESULT"
             DNS_RESULT="$(echo "$custom" | tr -d ' ')"
             ;;
-        *)
-            echo "Invalid DNS selection; using Cloudflare." >&2
-            DNS_RESULT="1.1.1.1,1.0.0.1"
-            ;;
+        *) die "Invalid DNS selection: $choice" ;;
     esac
 }
 
@@ -76,11 +73,14 @@ prompt_routing() {
             prompt_input "AllowedIPs (comma separated)" ""
             custom="$PROMPT_RESULT"
             custom="$(echo "$custom" | tr -d ' ')"
-            [ -n "$custom" ] || return 1
+            valid_cidr_list "$custom" || die "Custom routes must be a comma-separated CIDR list."
             ROUTE_CUSTOM_RESULT="$custom"
             ;;
-        *)
+        1|full|"")
             ROUTE_MODE_RESULT="full"
+            ;;
+        *)
+            die "Invalid routing selection: $choice"
             ;;
     esac
 }
@@ -94,7 +94,7 @@ routing_allowed_ips() {
             [ "$ipv6_enabled" = "1" ] && echo "$WG_IPV4_SUBNET,$WG_IPV6_SUBNET" || echo "$WG_IPV4_SUBNET"
             ;;
         custom)
-            [ -n "$custom" ] || return 1
+            valid_cidr_list "$custom" || return 1
             echo "$custom"
             ;;
         *) return 1 ;;
