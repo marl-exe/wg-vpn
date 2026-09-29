@@ -10,10 +10,8 @@ stage_owned_config() {
 
     [ -f "$WGVPN_CONFIG" ] && [ ! -L "$WGVPN_CONFIG" ] || die "wg-vpn configuration metadata is missing or unsafe."
     cp -a "$WGVPN_CONFIG" "$destination/etc/wireguard/wg-vpn/config.env"
-    if [ -f "$WGVPN_STATE" ]; then
-        [ ! -L "$WGVPN_STATE" ] || die "wg-vpn state metadata is unsafe."
-        cp -a "$WGVPN_STATE" "$destination/etc/wireguard/wg-vpn/state.env"
-    fi
+    [ -f "$WGVPN_STATE" ] && [ ! -L "$WGVPN_STATE" ] || die "wg-vpn state metadata is missing or unsafe."
+    cp -a "$WGVPN_STATE" "$destination/etc/wireguard/wg-vpn/state.env"
 
     for meta in "$WGVPN_CLIENT_META_DIR"/*.env; do
         [ -e "$meta" ] || continue
@@ -190,7 +188,7 @@ restore_runtime_verified() {
 }
 
 restore_config() {
-    local archive="$1" temp rollback old_interface restore_ok=0 rollback_ok=1
+    local archive="$1" temp rollback old_interface restore_ok=0 rollback_ok=1 new_firewall_applied=0
 
     [ -f "$archive" ] || die "Backup not found: $archive"
     validate_backup_archive "$archive" || die "Backup archive contains unsafe, duplicate, or unexpected entries."
@@ -219,10 +217,11 @@ restore_config() {
 
     if (apply_staged_tree "$temp") &&
        try_load_config &&
-       systemctl enable --now "wg-quick@$WG_INTERFACE" &&
-       (firewall_apply) &&
-       restore_runtime_verified; then
-        restore_ok=1
+       systemctl enable --now "wg-quick@$WG_INTERFACE"; then
+        if (firewall_apply); then
+            new_firewall_applied=1
+            restore_runtime_verified && restore_ok=1
+        fi
     fi
 
     if [ "$restore_ok" -eq 1 ]; then
@@ -233,7 +232,9 @@ restore_config() {
 
     warn "Restore activation failed; attempting verified rollback."
     systemctl stop "wg-quick@$old_interface" >/dev/null 2>&1 || true
-    firewall_remove >/dev/null 2>&1 || true
+    if [ "$new_firewall_applied" -eq 1 ]; then
+        firewall_remove >/dev/null 2>&1 || rollback_ok=0
+    fi
 
     (apply_staged_tree "$rollback") || rollback_ok=0
     if [ "$rollback_ok" -eq 1 ]; then
