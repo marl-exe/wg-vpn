@@ -29,8 +29,7 @@ mtu_test() {
 
 apply_wg_mtu() {
     local mtu="$1" conf meta client_conf
-    [[ "$mtu" =~ ^[0-9]+$ ]] || die "MTU must be numeric."
-    [ "$mtu" -ge 1280 ] && [ "$mtu" -le 9000 ] || die "MTU must be between 1280 and 9000."
+    valid_mtu "$mtu" || die "MTU must be between 1280 and 9000."
 
     conf="$WG_ROOT/${WG_INTERFACE}.conf"
     if grep -q '^MTU[[:space:]]*=' "$conf"; then
@@ -42,7 +41,7 @@ apply_wg_mtu() {
     for meta in "$WGVPN_CLIENT_META_DIR"/*.env; do
         [ -e "$meta" ] || continue
         unset CLIENT_NAME CLIENT_STATUS
-        source "$meta"
+        safe_source_env "$meta"
         client_conf="$(client_config_file "$CLIENT_NAME")"
         if [ -f "$client_conf" ]; then
             if grep -q '^MTU[[:space:]]*=' "$client_conf"; then
@@ -66,7 +65,7 @@ clear_wg_mtu() {
     for meta in "$WGVPN_CLIENT_META_DIR"/*.env; do
         [ -e "$meta" ] || continue
         unset CLIENT_NAME
-        source "$meta"
+        safe_source_env "$meta"
         client_conf="$(client_config_file "$CLIENT_NAME")"
         [ ! -f "$client_conf" ] || sed -i '/^MTU[[:space:]]*=/d' "$client_conf"
         update_env_value "$meta" "CLIENT_MTU" ""
