@@ -95,14 +95,15 @@ remove_peer_block_from_file() {
 }
 
 validate_server_config_file() {
-    local file="$1" tempdir staged error_file rc=0
-    tempdir="$(mktemp -d)"
-    staged="$tempdir/${WG_INTERFACE}.conf"
-    error_file="$tempdir/wg-quick.error"
+    local file="$1" staged error_file rc=0
+    staged="$(mktemp "$WG_ROOT/wgvpXXXXXX.conf")"
+    error_file="$(mktemp "$WG_ROOT/.wgvp-error.XXXXXX")"
+    chmod 600 "$staged" "$error_file"
 
-    cp -a "$file" "$staged" || { rm -rf "$tempdir"; return 1; }
+    cp "$file" "$staged" || { rm -f "$staged" "$error_file"; return 1; }
+    chmod 600 "$staged"
 
-    if ! (cd "$tempdir" && wg-quick strip "./${WG_INTERFACE}.conf" >/dev/null 2>"$error_file"); then
+    if ! wg-quick strip "$staged" >/dev/null 2>"$error_file"; then
         rc=1
         if [ -s "$error_file" ]; then
             warn "wg-quick validation error:"
@@ -110,7 +111,7 @@ validate_server_config_file() {
         fi
     fi
 
-    rm -rf "$tempdir"
+    rm -f "$staged" "$error_file"
     return "$rc"
 }
 
