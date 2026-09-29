@@ -266,6 +266,11 @@ case "$ID" in
     *) die "V1 supports Ubuntu and Debian only. Detected: $ID" ;;
 esac
 
+if [ -f "$STATE_DIR/config.env" ]; then
+    [ -d "$STATE_DIR" ] && [ ! -L "$STATE_DIR" ] && [ ! -L "$STATE_DIR/config.env" ] ||
+        die "Existing wg-vpn state path is unsafe; refusing update."
+fi
+
 if [ ! -f "$STATE_DIR/config.env" ]; then
     for path in "$STATE_DIR" "$INSTALL_LIB" "$INSTALL_BIN" "$SERVICE_FILE" "$SYSCTL_FILE"; do
         if [ -e "$path" ] || [ -L "$path" ]; then
@@ -326,7 +331,7 @@ if [ -f "$STATE_DIR/config.env" ]; then
         die "Updated code failed validation/firewall migration; previous management files were restored."
     fi
 
-    echo "wg-vpn management files updated from commit $REPO_COMMIT."
+    echo "wg-vpn management files updated from commit ${REPO_COMMIT:-custom-source}."
     echo "Existing server keys, clients, WireGuard configuration, VPN addresses, and unrelated firewall objects were not replaced."
     echo
     "$INSTALL_BIN" status
@@ -373,9 +378,16 @@ else
 fi
 
 INSTALL_TEMP="$(mktemp -d)"
-stage_management_files "$INSTALL_TEMP" || die "Could not stage management files from commit $REPO_COMMIT."
-install_staged_management_files "$INSTALL_TEMP" || die "Could not install management files."
+stage_management_files "$INSTALL_TEMP" || die "Could not stage management files from ${REPO_COMMIT:-custom source}."
+
+mkdir "$INSTALL_LIB" || die "Management directory appeared during install; refusing to overwrite it."
+if ! (set -o noclobber; : > "$INSTALL_BIN") 2>/dev/null; then
+    rmdir "$INSTALL_LIB" 2>/dev/null || true
+    die "Management binary appeared during install; refusing to overwrite it."
+fi
 FRESH_MANAGEMENT_INSTALLED=1
+
+install_staged_management_files "$INSTALL_TEMP" || die "Could not install management files."
 
 source "$INSTALL_LIB/common.sh"
 source "$INSTALL_LIB/config.sh"
@@ -540,8 +552,12 @@ echo "  MTU:                 ${FORCED_MTU:-automatic}"
 echo
 
 validate_selected_resources
-safe_mkdirs
+mkdir "$WGVPN_STATE_DIR" || die "wg-vpn state directory appeared during install; refusing to claim it."
 FRESH_STATE_CREATED=1
+chmod 700 "$WGVPN_STATE_DIR"
+mkdir "$WGVPN_CLIENT_META_DIR" || die "Could not create wg-vpn client metadata directory."
+chmod 700 "$WGVPN_CLIENT_META_DIR"
+ensure_root_dir "$WGVPN_CLIENT_CONFIG_DIR" 700 >/dev/null
 
 SERVER_CONF="$WG_ROOT/${WG_INTERFACE}.conf"
 if ! (set -o noclobber; : > "$SERVER_CONF") 2>/dev/null; then
@@ -561,6 +577,7 @@ SERVER_PUBLIC_KEY="$(printf '%s' "$SERVER_PRIVATE_KEY" | wg pubkey)"
 write_env_file "$WGVPN_CONFIG"     "WG_INTERFACE=$WG_INTERFACE"     "WG_IPV4_SUBNET=$WG_IPV4_SUBNET"     "WG_SERVER_IPV4=$WG_SERVER_IPV4"     "WG_PORT=$WG_PORT"     "PUBLIC_INTERFACE=$PUBLIC_INTERFACE"     "ENDPOINT_HOST=$ENDPOINT_HOST"     "SERVER_PUBLIC_KEY=$SERVER_PUBLIC_KEY"     "IPV6_ENABLED=$IPV6_ENABLED"     "WG_IPV6_PREFIX=$WG_IPV6_PREFIX"     "WG_IPV6_SUBNET=$WG_IPV6_SUBNET"     "WG_SERVER_IPV6=$WG_SERVER_IPV6"     "DEFAULT_DNS=$DEFAULT_DNS"     "DEFAULT_ROUTE_MODE=$DEFAULT_ROUTE_MODE"     "DEFAULT_CUSTOM_ROUTES=$DEFAULT_CUSTOM_ROUTES"     "FORCED_MTU=$FORCED_MTU"
 
 {
+    echo "# Managed by wg-vpn"
     echo "[Interface]"
     if [ "$IPV6_ENABLED" = "1" ]; then
         echo "Address = $WG_SERVER_IPV4/24, $WG_SERVER_IPV6/64"
