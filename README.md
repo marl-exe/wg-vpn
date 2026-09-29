@@ -31,7 +31,12 @@ The installer currently targets Ubuntu and Debian with systemd.
 
 ### Installer behavior
 
-The normal installation path automatically detects or selects technical settings that most users should not need to understand:
+At startup, choose:
+
+1. **Automatic (recommended)** — detects/selects technical settings automatically.
+2. **Manual / Advanced** — shows the same detected values as defaults and lets you override them.
+
+Automatic mode detects or selects technical settings that most users should not need to understand:
 
 - Public network interface
 - Public IPv4 endpoint
@@ -40,7 +45,18 @@ The normal installation path automatically detects or selects technical settings
 - WireGuard UDP port
 - Automatic MTU
 
-The installer only asks for preferences such as DNS, routing mode, optional IPv6, and the first client name. If automatic network detection fails, it falls back to asking for the missing value.
+Manual / Advanced mode lets you override:
+
+- Public network interface
+- Public IP or DNS endpoint
+- WireGuard interface name
+- VPN subnet
+- UDP port
+- MTU
+
+The installer also reports the virtualization environment (for example KVM, LXC, OpenVZ, or bare metal), reports whether `/dev/net/tun` is present, and performs a real temporary WireGuard-interface creation test. The WireGuard-interface test is the compatibility check that matters for native Linux WireGuard; TUN/TAP availability is informational.
+
+The installer still asks for preferences such as DNS, routing mode, optional IPv6, and the first client name. If automatic network detection fails, it falls back to asking for the missing value.
 
 DNS choices:
 
