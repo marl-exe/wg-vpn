@@ -4,7 +4,7 @@ Lightweight, low-latency WireGuard VPN installer and CLI manager for Ubuntu/Debi
 
 `wg-vpn` is designed for VPSes that already run other workloads. It installs native WireGuard, makes narrowly scoped networking changes, and provides a CLI manager without requiring Docker, Node.js, Python, a database, a Web UI, or an always-running management daemon.
 
-The current V1 has been successfully tested on real Ubuntu VPSes, including Ubuntu 26.04, with mobile WireGuard clients. Testing has covered clean installation, first-client creation and QR generation, full-tunnel routing, live handshakes, bidirectional traffic transfer, client management, iptables-nft integration, automatic MTU behavior, and an older-install upgrade/uninstall/fresh-install cycle.
+The current V1 has been successfully tested on real Ubuntu VPSes running Ubuntu 24.04.4 LTS (Noble Numbat) and Ubuntu 26.04.1 LTS (Resolute Raccoon), with mobile WireGuard clients. Testing has covered clean installation, first-client creation and QR generation, full-tunnel routing, live handshakes, bidirectional traffic transfer, client management, iptables-nft integration, automatic MTU behavior, and an older-install upgrade/uninstall/fresh-install cycle.
 
 ## Design goals
 
@@ -212,7 +212,7 @@ The installer, updater, uninstall path, and mutating CLI operations use the same
 
 ## Testing status
 
-The current `0.3.x` line has completed real-world runtime testing on multiple Ubuntu VPSes, including Ubuntu 26.04. Verified behavior includes:
+The current `0.3.x` line has completed real-world runtime testing on multiple Ubuntu VPSes running Ubuntu 24.04.4 LTS (Noble Numbat) and Ubuntu 26.04.1 LTS (Resolute Raccoon). Verified behavior includes:
 
 - Clean native WireGuard installation
 - First-client creation and QR generation
