@@ -97,7 +97,7 @@ validate_staged_restore() {
 
     server_conf="$root/etc/wireguard/${backup_iface}.conf"
     [ -f "$server_conf" ] && [ ! -L "$server_conf" ] || die "Backup is missing the server WireGuard configuration."
-    if ! (cd "$(dirname "$server_conf")" && wg-quick strip "$(basename "$server_conf")" >/dev/null 2>&1); then
+    if ! (cd "$(dirname "$server_conf")" && wg-quick strip "./$(basename "$server_conf")" >/dev/null 2>&1); then
         die "Backup server WireGuard configuration is invalid."
     fi
 
