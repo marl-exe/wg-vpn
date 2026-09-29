@@ -62,28 +62,43 @@ update_env_value() {
     mv -f "$tmp" "$file"
 }
 
+PROMPT_RESULT=""
+
 prompt_input() {
     local prompt="$1" default="${2:-}" answer=""
+
     if [ -r /dev/tty ]; then
         if [ -n "$default" ]; then
             printf '%s [%s]: ' "$prompt" "$default" > /dev/tty
         else
             printf '%s: ' "$prompt" > /dev/tty
         fi
-        IFS= read -r answer < /dev/tty || true
+        IFS= read -r answer < /dev/tty || answer=""
     else
-        IFS= read -r answer || true
+        if [ -n "$default" ]; then
+            printf '%s [%s]: ' "$prompt" "$default" >&2
+        else
+            printf '%s: ' "$prompt" >&2
+        fi
+        IFS= read -r answer || answer=""
     fi
-    printf '%s\n' "${answer:-$default}"
+
+    PROMPT_RESULT="${answer:-$default}"
 }
 
 prompt_yes_no() {
     local prompt="$1" default="${2:-y}" answer
+
     if [ "$default" = "y" ]; then
-        answer="$(prompt_input "$prompt (Y/n)" "")"; [ -n "$answer" ] || answer="y"
+        prompt_input "$prompt (Y/n)" ""
+        answer="$PROMPT_RESULT"
+        [ -n "$answer" ] || answer="y"
     else
-        answer="$(prompt_input "$prompt (y/N)" "")"; [ -n "$answer" ] || answer="n"
+        prompt_input "$prompt (y/N)" ""
+        answer="$PROMPT_RESULT"
+        [ -n "$answer" ] || answer="n"
     fi
+
     [[ "$answer" =~ ^[Yy]$ ]]
 }
 
