@@ -73,7 +73,7 @@ sync_interface() {
 
 add_client() {
     local name="$1" route_mode="${2:-}" custom_routes="${3:-}" dns="${4:-}"
-    local keepalive="${5:-25}" mtu="${6:-}"
+    local keepalive="${5:-25}" mtu="${6:-${FORCED_MTU:-}}"
     local meta conf ipv4 ipv6="" private public psk route_answer allowed address
 
     valid_client_name "$name" || die "Client names may contain letters, numbers, _ and - (max 32 chars)."
