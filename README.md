@@ -4,7 +4,7 @@ Lightweight, low-latency WireGuard VPN installer and CLI manager for Ubuntu/Debi
 
 `wg-vpn` is designed for VPSes that already run other workloads. It installs native WireGuard, makes narrowly scoped networking changes, and provides a CLI manager without requiring Docker, Node.js, Python, a database, a Web UI, or an always-running management daemon.
 
-The current V1 has been successfully tested on a real Ubuntu VPS with a mobile WireGuard client, including installation, full-tunnel routing, live handshakes, traffic transfer, and client management.
+The current V1 has been successfully tested on real Ubuntu VPSes, including Ubuntu 26.04, with mobile WireGuard clients. Testing has covered clean installation, first-client creation and QR generation, full-tunnel routing, live handshakes, bidirectional traffic transfer, client management, iptables-nft integration, automatic MTU behavior, and an older-install upgrade/uninstall/fresh-install cycle.
 
 ## Design goals
 
@@ -42,7 +42,7 @@ To update an existing installation, rerun the same command:
 curl -fsSL https://raw.githubusercontent.com/marl-exe/wg-vpn/main/install.sh | sudo bash
 ```
 
-When an existing `wg-vpn` installation is detected, the installer resolves one Git commit and downloads every management module from that same commit. Files are staged and syntax-checked before replacement, the update shares the same process lock as the CLI, and the previous management files are retained for rollback if validation or firewall migration fails. Existing server keys, client definitions, WireGuard configuration, and VPN addresses are preserved. Older fixed-name `WGVPN_*` firewall chains are migrated only when their exact legacy rule layout matches what wg-vpn previously created; otherwise they are left untouched.
+When an existing `wg-vpn` installation is detected, the installer resolves one Git commit and downloads every management module from that same commit. Files are staged and syntax-checked before replacement, the update shares the same process lock as the CLI, and the previous management files are retained for rollback if validation or firewall migration fails. Existing server keys, client definitions, WireGuard configuration, and VPN addresses are preserved. This in-place management upgrade path has also been tested against an older working installation before uninstalling and reinstalling cleanly. Older fixed-name `WGVPN_*` firewall chains are migrated only when their exact legacy rule layout matches what wg-vpn previously created; otherwise they are left untouched.
 
 ### Installer behavior
 
@@ -71,7 +71,7 @@ Manual / Advanced mode lets you override:
 
 The installer also reports the virtualization environment (for example KVM, LXC, OpenVZ, or bare metal), reports whether `/dev/net/tun` is present, and performs a real temporary WireGuard-interface creation test. The WireGuard-interface test is the compatibility check that matters for native Linux WireGuard; TUN/TAP availability is informational.
 
-The installer still asks for preferences such as DNS, routing mode, optional IPv6, and the first client name. If automatic network detection fails, it falls back to asking for the missing value.
+The installer still asks for preferences such as DNS, routing mode, optional IPv6, and the first client name. The first client created during installation automatically inherits the DNS and routing choices already selected during setup, so those preferences are not requested a second time. If automatic network detection fails, the installer falls back to asking for the missing value.
 
 DNS choices:
 
@@ -81,6 +81,16 @@ DNS choices:
 4. AdGuard
 5. System DNS
 6. Custom
+
+## Uninstall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/marl-exe/wg-vpn/main/uninstall.sh | sudo bash
+```
+
+The uninstaller removes wg-vpn-managed configuration, client files, services, firewall objects, and management files only when ownership can be verified. Unrelated WireGuard configuration is preserved, and WireGuard/qrencode/iptables packages are intentionally left installed.
+
+For older installations, rerunning the current installer first upgrades the management files in place. That older-install → management-upgrade → uninstall → fresh-install path has been successfully tested.
 
 ## CLI
 
@@ -202,20 +212,24 @@ The installer, updater, uninstall path, and mutating CLI operations use the same
 
 ## Testing status
 
-The original V1 networking path has completed a successful real-world installation and connectivity test on an Ubuntu VPS with a mobile WireGuard client. That test verified:
+The current `0.3.x` line has completed real-world runtime testing on multiple Ubuntu VPSes, including Ubuntu 26.04. Verified behavior includes:
 
-- WireGuard service startup
+- Clean native WireGuard installation
+- First-client creation and QR generation
+- Installer-selected DNS/routing defaults inherited by the first client without duplicate prompts
 - Full-tunnel Internet routing
 - Peer handshakes
 - Bidirectional traffic transfer
-- Client configuration and QR generation
 - `wg-vpn status`
 - iptables-nft firewall integration
 - Automatic MTU operation
+- Staged WireGuard configuration validation under `/etc/wireguard`
+- Clean uninstall while preserving unrelated WireGuard configuration
+- Older-install → management upgrade → uninstall → fresh-install migration path
 
-The current hardened `0.3.x` code also passes Bash syntax checks, ShellCheck, and repository safety regression tests covering strict metadata parsing, hostile/duplicate archive entries, IPv4/IPv6 CIDR validation, DNS/endpoint validation, firewall-flush guards, whole-`/etc/wireguard` deletion guards, lock-file preservation, and piped-installer prompt regressions.
+The repository also passes Bash syntax checks, ShellCheck, and safety regression tests covering strict metadata parsing, hostile/duplicate archive entries, IPv4/IPv6 CIDR validation, DNS/endpoint validation, firewall-flush guards, whole-`/etc/wireguard` deletion guards, lock-file preservation, installer prompt regressions, first-client default inheritance, and staged WireGuard validation behavior.
 
-The new ownership, transactional restore/client, and failure-rollback paths still need broader runtime testing on additional clean VPSes before being treated as production-validated across environments.
+Fresh installation and normal client creation are now runtime-validated. Broader runtime testing is still desirable for less common paths such as IPv6 deployments, backup/restore under failure conditions, rollback verification, unusual firewall layouts, containerized VPS environments, and other edge-case host configurations.
 
 ## License
 
