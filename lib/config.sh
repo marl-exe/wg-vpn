@@ -3,7 +3,11 @@
 system_dns() {
     local dns
     dns="$(awk '/^nameserver[[:space:]]+/ {print $2}' /etc/resolv.conf 2>/dev/null | grep -Ev '^(127\.0\.0\.1|127\.0\.0\.53|::1)$' | head -2 | paste -sd, -)"
-    [ -n "$dns" ] && echo "$dns" || echo "1.1.1.1,1.0.0.1"
+    if [ -n "$dns" ] && valid_dns_list "$dns"; then
+        echo "$dns"
+    else
+        echo "1.1.1.1,1.0.0.1"
+    fi
 }
 
 prompt_dns() {
@@ -36,6 +40,7 @@ prompt_dns() {
             prompt_input "DNS servers (comma separated)" "1.1.1.1,1.0.0.1"
             custom="$PROMPT_RESULT"
             DNS_RESULT="$(echo "$custom" | tr -d ' ')"
+            valid_dns_list "$DNS_RESULT" || die "Custom DNS must be a comma-separated list of IPv4/IPv6 addresses."
             ;;
         *) die "Invalid DNS selection: $choice" ;;
     esac
