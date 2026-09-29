@@ -16,7 +16,7 @@ source "$LIB_DIR/clients.sh"
 source "$LIB_DIR/mtu.sh"
 source "$LIB_DIR/backup.sh"
 
-VERSION="0.2.0"
+VERSION="0.3.0"
 
 usage() {
     cat <<'EOF'
@@ -105,6 +105,9 @@ status_cmd() {
     if ip link show "$WG_INTERFACE" >/dev/null 2>&1; then
         while IFS=$'\t' read -r public_key _ endpoint _ latest rx tx _; do
             [ -n "$public_key" ] || continue
+            [[ "$latest" =~ ^[0-9]+$ ]] || latest=0
+            [[ "$rx" =~ ^[0-9]+$ ]] || rx=0
+            [[ "$tx" =~ ^[0-9]+$ ]] || tx=0
             peer_endpoint["$public_key"]="$endpoint"
             peer_latest["$public_key"]="$latest"
             peer_rx["$public_key"]="$rx"
@@ -117,7 +120,7 @@ status_cmd() {
         [ -e "$meta" ] || continue
         total=$((total + 1))
         unset CLIENT_STATUS
-        safe_source_env "$meta"
+        load_client_meta_file "$meta" || die "Invalid or unsafe client metadata: $meta"
         [ "${CLIENT_STATUS:-}" != "active" ] || active=$((active + 1))
     done
 
@@ -149,7 +152,7 @@ status_cmd() {
         [ -e "$meta" ] || continue
 
         unset CLIENT_NAME CLIENT_IPV4 CLIENT_STATUS CLIENT_PUBLIC_KEY
-        safe_source_env "$meta"
+        load_client_meta_file "$meta" || die "Invalid or unsafe client metadata: $meta"
 
         endpoint="${peer_endpoint[$CLIENT_PUBLIC_KEY]-}"
         latest="${peer_latest[$CLIENT_PUBLIC_KEY]-0}"
