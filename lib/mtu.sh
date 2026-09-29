@@ -41,7 +41,7 @@ apply_wg_mtu() {
     for meta in "$WGVPN_CLIENT_META_DIR"/*.env; do
         [ -e "$meta" ] || continue
         unset CLIENT_NAME CLIENT_STATUS
-        safe_source_env "$meta"
+        load_client_meta_file "$meta" || die "Invalid or unsafe client metadata: $meta"
         client_conf="$(client_config_file "$CLIENT_NAME")"
         if [ -f "$client_conf" ]; then
             if grep -q '^MTU[[:space:]]*=' "$client_conf"; then
@@ -65,7 +65,7 @@ clear_wg_mtu() {
     for meta in "$WGVPN_CLIENT_META_DIR"/*.env; do
         [ -e "$meta" ] || continue
         unset CLIENT_NAME
-        safe_source_env "$meta"
+        load_client_meta_file "$meta" || die "Invalid or unsafe client metadata: $meta"
         client_conf="$(client_config_file "$CLIENT_NAME")"
         [ ! -f "$client_conf" ] || sed -i '/^MTU[[:space:]]*=/d' "$client_conf"
         update_env_value "$meta" "CLIENT_MTU" ""
@@ -78,6 +78,7 @@ clear_wg_mtu() {
 optimize_wg() {
     local physical recommended
     physical="$(interface_mtu "$PUBLIC_INTERFACE")"
+    [ -n "$physical" ] && [[ "$physical" =~ ^[0-9]+$ ]] || die "Could not determine MTU for $PUBLIC_INTERFACE."
     recommended=$((physical - 80))
     [ "$recommended" -ge 1280 ] || recommended=1280
 
