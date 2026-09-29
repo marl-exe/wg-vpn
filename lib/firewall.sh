@@ -260,6 +260,7 @@ remove_legacy_ipv6_if_owned() {
 
 firewall_apply_ipv4() {
     local had_input=0 had_fwd=0 had_nat=0
+    local had_jump_input=0 had_jump_fwd_in=0 had_jump_fwd_out=0 had_jump_nat=0
     firewall_init_names
 
     chain_exists4 filter "$WGVPN_INPUT_CHAIN" && had_input=1
@@ -270,28 +271,73 @@ firewall_apply_ipv4() {
     [ "$had_fwd" -eq 0 ] || managed_chain_matches4 forward || die "Firewall chain $WGVPN_FORWARD_CHAIN exists with unexpected rules."
     [ "$had_nat" -eq 0 ] || managed_chain_matches4 nat || die "Firewall chain $WGVPN_NAT_CHAIN exists with unexpected rules."
 
-    create_managed_chain4 input || return 1
-    create_managed_chain4 forward || { [ "$had_input" -eq 1 ] || { iptables -w 5 -F "$WGVPN_INPUT_CHAIN"; iptables -w 5 -X "$WGVPN_INPUT_CHAIN"; }; return 1; }
-    create_managed_chain4 nat || {
-        [ "$had_input" -eq 1 ] || { iptables -w 5 -F "$WGVPN_INPUT_CHAIN"; iptables -w 5 -X "$WGVPN_INPUT_CHAIN"; }
-        [ "$had_fwd" -eq 1 ] || { iptables -w 5 -F "$WGVPN_FORWARD_CHAIN"; iptables -w 5 -X "$WGVPN_FORWARD_CHAIN"; }
-        return 1
-    }
+    iptables -w 5 -C INPUT -i "$PUBLIC_INTERFACE" -p udp --dport "$WG_PORT" -j "$WGVPN_INPUT_CHAIN" >/dev/null 2>&1 && had_jump_input=1
+    iptables -w 5 -C FORWARD -i "$WG_INTERFACE" -j "$WGVPN_FORWARD_CHAIN" >/dev/null 2>&1 && had_jump_fwd_in=1
+    iptables -w 5 -C FORWARD -o "$WG_INTERFACE" -j "$WGVPN_FORWARD_CHAIN" >/dev/null 2>&1 && had_jump_fwd_out=1
+    iptables -w 5 -t nat -C POSTROUTING -s "$WG_IPV4_SUBNET" -o "$PUBLIC_INTERFACE" -j "$WGVPN_NAT_CHAIN" >/dev/null 2>&1 && had_jump_nat=1
 
-    iptables -w 5 -C INPUT -i "$PUBLIC_INTERFACE" -p udp --dport "$WG_PORT" -j "$WGVPN_INPUT_CHAIN" >/dev/null 2>&1 ||
-        iptables -w 5 -I INPUT -i "$PUBLIC_INTERFACE" -p udp --dport "$WG_PORT" -j "$WGVPN_INPUT_CHAIN" || return 1
-    iptables -w 5 -C FORWARD -i "$WG_INTERFACE" -j "$WGVPN_FORWARD_CHAIN" >/dev/null 2>&1 ||
-        iptables -w 5 -I FORWARD -i "$WG_INTERFACE" -j "$WGVPN_FORWARD_CHAIN" || return 1
-    iptables -w 5 -C FORWARD -o "$WG_INTERFACE" -j "$WGVPN_FORWARD_CHAIN" >/dev/null 2>&1 ||
-        iptables -w 5 -I FORWARD -o "$WG_INTERFACE" -j "$WGVPN_FORWARD_CHAIN" || return 1
-    iptables -w 5 -t nat -C POSTROUTING -s "$WG_IPV4_SUBNET" -o "$PUBLIC_INTERFACE" -j "$WGVPN_NAT_CHAIN" >/dev/null 2>&1 ||
-        iptables -w 5 -t nat -I POSTROUTING -s "$WG_IPV4_SUBNET" -o "$PUBLIC_INTERFACE" -j "$WGVPN_NAT_CHAIN" || return 1
+    if ! create_managed_chain4 input ||
+       ! create_managed_chain4 forward ||
+       ! create_managed_chain4 nat; then
+        firewall_rollback_ipv4_apply "$had_input" "$had_fwd" "$had_nat" "$had_jump_input" "$had_jump_fwd_in" "$had_jump_fwd_out" "$had_jump_nat"
+        return 1
+    fi
+
+    if [ "$had_jump_input" -eq 0 ]; then
+        iptables -w 5 -C INPUT -i "$PUBLIC_INTERFACE" -p udp --dport "$WG_PORT" -j "$WGVPN_INPUT_CHAIN" >/dev/null 2>&1 ||
+            iptables -w 5 -I INPUT -i "$PUBLIC_INTERFACE" -p udp --dport "$WG_PORT" -j "$WGVPN_INPUT_CHAIN" || {
+                firewall_rollback_ipv4_apply "$had_input" "$had_fwd" "$had_nat" "$had_jump_input" "$had_jump_fwd_in" "$had_jump_fwd_out" "$had_jump_nat"
+                return 1
+            }
+    fi
+    if [ "$had_jump_fwd_in" -eq 0 ]; then
+        iptables -w 5 -I FORWARD -i "$WG_INTERFACE" -j "$WGVPN_FORWARD_CHAIN" || {
+            firewall_rollback_ipv4_apply "$had_input" "$had_fwd" "$had_nat" "$had_jump_input" "$had_jump_fwd_in" "$had_jump_fwd_out" "$had_jump_nat"
+            return 1
+        }
+    fi
+    if [ "$had_jump_fwd_out" -eq 0 ]; then
+        iptables -w 5 -I FORWARD -o "$WG_INTERFACE" -j "$WGVPN_FORWARD_CHAIN" || {
+            firewall_rollback_ipv4_apply "$had_input" "$had_fwd" "$had_nat" "$had_jump_input" "$had_jump_fwd_in" "$had_jump_fwd_out" "$had_jump_nat"
+            return 1
+        }
+    fi
+    if [ "$had_jump_nat" -eq 0 ]; then
+        iptables -w 5 -t nat -I POSTROUTING -s "$WG_IPV4_SUBNET" -o "$PUBLIC_INTERFACE" -j "$WGVPN_NAT_CHAIN" || {
+            firewall_rollback_ipv4_apply "$had_input" "$had_fwd" "$had_nat" "$had_jump_input" "$had_jump_fwd_in" "$had_jump_fwd_out" "$had_jump_nat"
+            return 1
+        }
+    fi
 }
 
+firewall_rollback_ipv4_apply() {
+    local had_input="$1" had_fwd="$2" had_nat="$3"
+    local had_jump_input="$4" had_jump_fwd_in="$5" had_jump_fwd_out="$6" had_jump_nat="$7"
+    firewall_init_names
+
+    [ "$had_jump_input" -eq 1 ] || iptables -w 5 -D INPUT -i "$PUBLIC_INTERFACE" -p udp --dport "$WG_PORT" -j "$WGVPN_INPUT_CHAIN" 2>/dev/null || true
+    [ "$had_jump_fwd_in" -eq 1 ] || iptables -w 5 -D FORWARD -i "$WG_INTERFACE" -j "$WGVPN_FORWARD_CHAIN" 2>/dev/null || true
+    [ "$had_jump_fwd_out" -eq 1 ] || iptables -w 5 -D FORWARD -o "$WG_INTERFACE" -j "$WGVPN_FORWARD_CHAIN" 2>/dev/null || true
+    [ "$had_jump_nat" -eq 1 ] || iptables -w 5 -t nat -D POSTROUTING -s "$WG_IPV4_SUBNET" -o "$PUBLIC_INTERFACE" -j "$WGVPN_NAT_CHAIN" 2>/dev/null || true
+
+    if [ "$had_nat" -eq 0 ] && chain_exists4 nat "$WGVPN_NAT_CHAIN"; then
+        iptables -w 5 -t nat -F "$WGVPN_NAT_CHAIN" 2>/dev/null || true
+        iptables -w 5 -t nat -X "$WGVPN_NAT_CHAIN" 2>/dev/null || true
+    fi
+    if [ "$had_fwd" -eq 0 ] && chain_exists4 filter "$WGVPN_FORWARD_CHAIN"; then
+        iptables -w 5 -F "$WGVPN_FORWARD_CHAIN" 2>/dev/null || true
+        iptables -w 5 -X "$WGVPN_FORWARD_CHAIN" 2>/dev/null || true
+    fi
+    if [ "$had_input" -eq 0 ] && chain_exists4 filter "$WGVPN_INPUT_CHAIN"; then
+        iptables -w 5 -F "$WGVPN_INPUT_CHAIN" 2>/dev/null || true
+        iptables -w 5 -X "$WGVPN_INPUT_CHAIN" 2>/dev/null || true
+    fi
+}
 firewall_apply_ipv6() {
     [ "${IPV6_ENABLED:-0}" = "1" ] || return 0
     command_exists ip6tables || die "IPv6 is enabled but ip6tables is unavailable."
     local had_input=0 had_fwd=0 had_nat=0
+    local had_jump_input=0 had_jump_fwd_in=0 had_jump_fwd_out=0 had_jump_nat=0
     firewall_init_names
 
     chain_exists6 filter "$WGVPN_INPUT_CHAIN" && had_input=1
@@ -302,27 +348,89 @@ firewall_apply_ipv6() {
     [ "$had_fwd" -eq 0 ] || managed_chain_matches6 forward || die "IPv6 firewall chain $WGVPN_FORWARD_CHAIN exists with unexpected rules."
     [ "$had_nat" -eq 0 ] || managed_chain_matches6 nat || die "IPv6 firewall chain $WGVPN_NAT_CHAIN exists with unexpected rules."
 
-    create_managed_chain6 input || return 1
-    create_managed_chain6 forward || return 1
-    create_managed_chain6 nat || return 1
+    ip6tables -w 5 -C INPUT -i "$PUBLIC_INTERFACE" -p udp --dport "$WG_PORT" -j "$WGVPN_INPUT_CHAIN" >/dev/null 2>&1 && had_jump_input=1
+    ip6tables -w 5 -C FORWARD -i "$WG_INTERFACE" -j "$WGVPN_FORWARD_CHAIN" >/dev/null 2>&1 && had_jump_fwd_in=1
+    ip6tables -w 5 -C FORWARD -o "$WG_INTERFACE" -j "$WGVPN_FORWARD_CHAIN" >/dev/null 2>&1 && had_jump_fwd_out=1
+    ip6tables -w 5 -t nat -C POSTROUTING -s "$WG_IPV6_SUBNET" -o "$PUBLIC_INTERFACE" -j "$WGVPN_NAT_CHAIN" >/dev/null 2>&1 && had_jump_nat=1
 
-    ip6tables -w 5 -C INPUT -i "$PUBLIC_INTERFACE" -p udp --dport "$WG_PORT" -j "$WGVPN_INPUT_CHAIN" >/dev/null 2>&1 ||
-        ip6tables -w 5 -I INPUT -i "$PUBLIC_INTERFACE" -p udp --dport "$WG_PORT" -j "$WGVPN_INPUT_CHAIN" || return 1
-    ip6tables -w 5 -C FORWARD -i "$WG_INTERFACE" -j "$WGVPN_FORWARD_CHAIN" >/dev/null 2>&1 ||
-        ip6tables -w 5 -I FORWARD -i "$WG_INTERFACE" -j "$WGVPN_FORWARD_CHAIN" || return 1
-    ip6tables -w 5 -C FORWARD -o "$WG_INTERFACE" -j "$WGVPN_FORWARD_CHAIN" >/dev/null 2>&1 ||
-        ip6tables -w 5 -I FORWARD -o "$WG_INTERFACE" -j "$WGVPN_FORWARD_CHAIN" || return 1
-    ip6tables -w 5 -t nat -C POSTROUTING -s "$WG_IPV6_SUBNET" -o "$PUBLIC_INTERFACE" -j "$WGVPN_NAT_CHAIN" >/dev/null 2>&1 ||
-        ip6tables -w 5 -t nat -I POSTROUTING -s "$WG_IPV6_SUBNET" -o "$PUBLIC_INTERFACE" -j "$WGVPN_NAT_CHAIN" || return 1
+    if ! create_managed_chain6 input ||
+       ! create_managed_chain6 forward ||
+       ! create_managed_chain6 nat; then
+        firewall_rollback_ipv6_apply "$had_input" "$had_fwd" "$had_nat" "$had_jump_input" "$had_jump_fwd_in" "$had_jump_fwd_out" "$had_jump_nat"
+        return 1
+    fi
+
+    if [ "$had_jump_input" -eq 0 ]; then
+        ip6tables -w 5 -I INPUT -i "$PUBLIC_INTERFACE" -p udp --dport "$WG_PORT" -j "$WGVPN_INPUT_CHAIN" || {
+            firewall_rollback_ipv6_apply "$had_input" "$had_fwd" "$had_nat" "$had_jump_input" "$had_jump_fwd_in" "$had_jump_fwd_out" "$had_jump_nat"
+            return 1
+        }
+    fi
+    if [ "$had_jump_fwd_in" -eq 0 ]; then
+        ip6tables -w 5 -I FORWARD -i "$WG_INTERFACE" -j "$WGVPN_FORWARD_CHAIN" || {
+            firewall_rollback_ipv6_apply "$had_input" "$had_fwd" "$had_nat" "$had_jump_input" "$had_jump_fwd_in" "$had_jump_fwd_out" "$had_jump_nat"
+            return 1
+        }
+    fi
+    if [ "$had_jump_fwd_out" -eq 0 ]; then
+        ip6tables -w 5 -I FORWARD -o "$WG_INTERFACE" -j "$WGVPN_FORWARD_CHAIN" || {
+            firewall_rollback_ipv6_apply "$had_input" "$had_fwd" "$had_nat" "$had_jump_input" "$had_jump_fwd_in" "$had_jump_fwd_out" "$had_jump_nat"
+            return 1
+        }
+    fi
+    if [ "$had_jump_nat" -eq 0 ]; then
+        ip6tables -w 5 -t nat -I POSTROUTING -s "$WG_IPV6_SUBNET" -o "$PUBLIC_INTERFACE" -j "$WGVPN_NAT_CHAIN" || {
+            firewall_rollback_ipv6_apply "$had_input" "$had_fwd" "$had_nat" "$had_jump_input" "$had_jump_fwd_in" "$had_jump_fwd_out" "$had_jump_nat"
+            return 1
+        }
+    fi
+}
+
+firewall_rollback_ipv6_apply() {
+    local had_input="$1" had_fwd="$2" had_nat="$3"
+    local had_jump_input="$4" had_jump_fwd_in="$5" had_jump_fwd_out="$6" had_jump_nat="$7"
+    firewall_init_names
+
+    [ "$had_jump_input" -eq 1 ] || ip6tables -w 5 -D INPUT -i "$PUBLIC_INTERFACE" -p udp --dport "$WG_PORT" -j "$WGVPN_INPUT_CHAIN" 2>/dev/null || true
+    [ "$had_jump_fwd_in" -eq 1 ] || ip6tables -w 5 -D FORWARD -i "$WG_INTERFACE" -j "$WGVPN_FORWARD_CHAIN" 2>/dev/null || true
+    [ "$had_jump_fwd_out" -eq 1 ] || ip6tables -w 5 -D FORWARD -o "$WG_INTERFACE" -j "$WGVPN_FORWARD_CHAIN" 2>/dev/null || true
+    [ "$had_jump_nat" -eq 1 ] || ip6tables -w 5 -t nat -D POSTROUTING -s "$WG_IPV6_SUBNET" -o "$PUBLIC_INTERFACE" -j "$WGVPN_NAT_CHAIN" 2>/dev/null || true
+
+    if [ "$had_nat" -eq 0 ] && chain_exists6 nat "$WGVPN_NAT_CHAIN"; then
+        ip6tables -w 5 -t nat -F "$WGVPN_NAT_CHAIN" 2>/dev/null || true
+        ip6tables -w 5 -t nat -X "$WGVPN_NAT_CHAIN" 2>/dev/null || true
+    fi
+    if [ "$had_fwd" -eq 0 ] && chain_exists6 filter "$WGVPN_FORWARD_CHAIN"; then
+        ip6tables -w 5 -F "$WGVPN_FORWARD_CHAIN" 2>/dev/null || true
+        ip6tables -w 5 -X "$WGVPN_FORWARD_CHAIN" 2>/dev/null || true
+    fi
+    if [ "$had_input" -eq 0 ] && chain_exists6 filter "$WGVPN_INPUT_CHAIN"; then
+        ip6tables -w 5 -F "$WGVPN_INPUT_CHAIN" 2>/dev/null || true
+        ip6tables -w 5 -X "$WGVPN_INPUT_CHAIN" 2>/dev/null || true
+    fi
+}
+firewall_rules_present_ipv4() {
+    firewall_init_names
+    managed_chain_matches4 input &&
+    managed_chain_matches4 forward &&
+    managed_chain_matches4 nat &&
+    iptables -w 5 -C INPUT -i "$PUBLIC_INTERFACE" -p udp --dport "$WG_PORT" -j "$WGVPN_INPUT_CHAIN" >/dev/null 2>&1 &&
+    iptables -w 5 -C FORWARD -i "$WG_INTERFACE" -j "$WGVPN_FORWARD_CHAIN" >/dev/null 2>&1 &&
+    iptables -w 5 -C FORWARD -o "$WG_INTERFACE" -j "$WGVPN_FORWARD_CHAIN" >/dev/null 2>&1 &&
+    iptables -w 5 -t nat -C POSTROUTING -s "$WG_IPV4_SUBNET" -o "$PUBLIC_INTERFACE" -j "$WGVPN_NAT_CHAIN" >/dev/null 2>&1
 }
 
 firewall_apply() {
+    local ipv4_preexisting=0
     command_exists iptables || die "iptables is required for V1 firewall management."
+    firewall_rules_present_ipv4 && ipv4_preexisting=1
+
     firewall_apply_ipv4 || die "Could not apply IPv4 firewall rules."
-    firewall_apply_ipv6 || {
-        firewall_remove_ipv6 || true
+    if ! firewall_apply_ipv6; then
+        [ "$ipv4_preexisting" -eq 1 ] || firewall_remove_ipv4 || true
         die "Could not apply IPv6 firewall rules."
-    }
+    fi
+
     remove_legacy_ipv4_if_owned
     remove_legacy_ipv6_if_owned
 }
@@ -371,8 +479,10 @@ firewall_remove_ipv6() {
 }
 
 firewall_remove() {
-    firewall_remove_ipv6 || true
-    firewall_remove_ipv4 || true
+    local rc=0
+    firewall_remove_ipv6 || rc=1
+    firewall_remove_ipv4 || rc=1
+    return "$rc"
 }
 
 firewall_rules_present() {
