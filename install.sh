@@ -9,38 +9,52 @@ STATE_DIR="$WG_ROOT/wg-vpn"
 
 die() { echo "wg-vpn installer: $*" >&2; exit 1; }
 
-prompt() {
+INSTALL_PROMPT_RESULT=""
+
+ask() {
     local label="$1" default="${2:-}" value=""
+
     if [ -r /dev/tty ]; then
         if [ -n "$default" ]; then
             printf '%s [%s]: ' "$label" "$default" > /dev/tty
         else
             printf '%s: ' "$label" > /dev/tty
         fi
-        IFS= read -r value < /dev/tty || true
+        IFS= read -r value < /dev/tty || value=""
+    else
+        if [ -n "$default" ]; then
+            printf '%s [%s]: ' "$label" "$default" >&2
+        else
+            printf '%s: ' "$label" >&2
+        fi
+        IFS= read -r value || value=""
     fi
-    printf '%s\n' "${value:-$default}"
+
+    INSTALL_PROMPT_RESULT="${value:-$default}"
 }
 
 yesno() {
     local label="$1" default="${2:-y}" value
+
     if [ "$default" = "y" ]; then
-        value="$(prompt "$label (Y/n)" "")"
+        ask "$label (Y/n)" ""
+        value="$INSTALL_PROMPT_RESULT"
         [ -n "$value" ] || value="y"
     else
-        value="$(prompt "$label (y/N)" "")"
+        ask "$label (y/N)" ""
+        value="$INSTALL_PROMPT_RESULT"
         [ -n "$value" ] || value="n"
     fi
+
     [[ "$value" =~ ^[Yy]$ ]]
 }
-
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
 is_private_ipv4() {
     local ip="$1"
     [[ "$ip" =~ ^10\. ]] ||
     [[ "$ip" =~ ^192\.168\. ]] ||
-    [[ "$ip" =~ ^172\.(1[6-9]|2[0-9]|3[01])\. ]]
+    [[ "$ip" =~ ^172\.(1[6-9]|2[0-9]|3[01])\.]]
 }
 
 choose_wg_interface() {
@@ -145,7 +159,8 @@ echo "  1) Automatic (recommended)"
 echo "  2) Manual / Advanced"
 echo
 
-setup_choice="$(prompt "Mode" "1")"
+ask "Mode" "1"
+setup_choice="$INSTALL_PROMPT_RESULT"
 case "$setup_choice" in
     2|manual|advanced) SETUP_MODE="manual" ;;
     *) SETUP_MODE="automatic" ;;
@@ -211,27 +226,33 @@ if [ "$SETUP_MODE" = "manual" ]; then
     echo "Detected values are shown as defaults. Press Enter to keep a value."
     echo
 
-    PUBLIC_INTERFACE="$(prompt "Public interface" "$DETECTED_PUBLIC_INTERFACE")"
+    ask "Public interface" "$DETECTED_PUBLIC_INTERFACE"
+    PUBLIC_INTERFACE="$INSTALL_PROMPT_RESULT"
     [ -n "$PUBLIC_INTERFACE" ] || die "A public network interface is required."
     ip link show dev "$PUBLIC_INTERFACE" >/dev/null 2>&1 || die "Interface $PUBLIC_INTERFACE does not exist."
 
-    WG_INTERFACE="$(prompt "WireGuard interface" "${DETECTED_WG_INTERFACE:-wg0}")"
+    ask "WireGuard interface" "${DETECTED_WG_INTERFACE:-wg0}"
+    WG_INTERFACE="$INSTALL_PROMPT_RESULT"
     valid_interface_name "$WG_INTERFACE" || die "Invalid WireGuard interface name."
     [ ! -e "$WG_ROOT/${WG_INTERFACE}.conf" ] || die "$WG_ROOT/${WG_INTERFACE}.conf already exists. Refusing to overwrite it."
     ip link show "$WG_INTERFACE" >/dev/null 2>&1 && die "Interface $WG_INTERFACE already exists. Refusing to take it over."
 
-    WG_IPV4_SUBNET="$(prompt "VPN IPv4 subnet (/24)" "${DETECTED_IPV4_SUBNET:-10.66.66.0/24}")"
+    ask "VPN IPv4 subnet (/24)" "${DETECTED_IPV4_SUBNET:-10.66.66.0/24}"
+    WG_IPV4_SUBNET="$INSTALL_PROMPT_RESULT"
     valid_ipv4_24_cidr "$WG_IPV4_SUBNET" || die "V1 currently requires a valid IPv4 /24 subnet."
     subnet_conflicts "$WG_IPV4_SUBNET" && die "$WG_IPV4_SUBNET already appears in the routing table."
 
-    WG_PORT="$(prompt "WireGuard UDP port" "${DETECTED_PORT:-51820}")"
+    ask "WireGuard UDP port" "${DETECTED_PORT:-51820}"
+    WG_PORT="$INSTALL_PROMPT_RESULT"
     valid_port "$WG_PORT" || die "Invalid UDP port."
     udp_port_in_use "$WG_PORT" && die "UDP port $WG_PORT is already in use."
 
-    ENDPOINT_HOST="$(prompt "Public IP or DNS name" "$DETECTED_ENDPOINT")"
+    ask "Public IP or DNS name" "$DETECTED_ENDPOINT"
+    ENDPOINT_HOST="$INSTALL_PROMPT_RESULT"
     [ -n "$ENDPOINT_HOST" ] || die "A public IP or DNS endpoint is required."
 
-    mtu_input="$(prompt "MTU (automatic or number)" "automatic")"
+    ask "MTU (automatic or number)" "automatic"
+    mtu_input="$INSTALL_PROMPT_RESULT"
     case "$mtu_input" in
         automatic|auto|"") FORCED_MTU="" ;;
         *)
@@ -243,32 +264,37 @@ if [ "$SETUP_MODE" = "manual" ]; then
 else
     PUBLIC_INTERFACE="$DETECTED_PUBLIC_INTERFACE"
     if [ -z "$PUBLIC_INTERFACE" ]; then
-        PUBLIC_INTERFACE="$(prompt "Could not auto-detect the public interface. Enter interface name" "")"
+        ask "Could not auto-detect the public interface. Enter interface name" ""
+        PUBLIC_INTERFACE="$INSTALL_PROMPT_RESULT"
     fi
     [ -n "$PUBLIC_INTERFACE" ] || die "A public network interface is required."
     ip link show dev "$PUBLIC_INTERFACE" >/dev/null 2>&1 || die "Interface $PUBLIC_INTERFACE does not exist."
 
     WG_INTERFACE="$DETECTED_WG_INTERFACE"
     if [ -z "$WG_INTERFACE" ]; then
-        WG_INTERFACE="$(prompt "Could not find a free wg0-wg9 interface. Enter WireGuard interface" "wg-vpn0")"
+        ask "Could not find a free wg0-wg9 interface. Enter WireGuard interface" "wg-vpn0"
+        WG_INTERFACE="$INSTALL_PROMPT_RESULT"
     fi
     valid_interface_name "$WG_INTERFACE" || die "Invalid WireGuard interface name."
 
     WG_IPV4_SUBNET="$DETECTED_IPV4_SUBNET"
     if [ -z "$WG_IPV4_SUBNET" ]; then
-        WG_IPV4_SUBNET="$(prompt "Could not find a free default VPN subnet. Enter IPv4 /24 subnet" "10.66.66.0/24")"
+        ask "Could not find a free default VPN subnet. Enter IPv4 /24 subnet" "10.66.66.0/24"
+        WG_IPV4_SUBNET="$INSTALL_PROMPT_RESULT"
     fi
     valid_ipv4_24_cidr "$WG_IPV4_SUBNET" || die "V1 currently requires a valid IPv4 /24 subnet."
 
     WG_PORT="$DETECTED_PORT"
     if [ -z "$WG_PORT" ]; then
-        WG_PORT="$(prompt "Could not find a free UDP port. Enter WireGuard port" "51820")"
+        ask "Could not find a free UDP port. Enter WireGuard port" "51820"
+        WG_PORT="$INSTALL_PROMPT_RESULT"
     fi
     valid_port "$WG_PORT" || die "Invalid UDP port."
 
     ENDPOINT_HOST="$DETECTED_ENDPOINT"
     if [ -z "$ENDPOINT_HOST" ]; then
-        ENDPOINT_HOST="$(prompt "Could not auto-detect the public IP. Enter public IP or DNS name" "")"
+        ask "Could not auto-detect the public IP. Enter public IP or DNS name" ""
+        ENDPOINT_HOST="$INSTALL_PROMPT_RESULT"
     fi
     [ -n "$ENDPOINT_HOST" ] || die "A public IP or DNS endpoint is required."
 
@@ -298,10 +324,11 @@ else
     echo "  Public IPv6:         not detected"
 fi
 
-DEFAULT_DNS="$(prompt_dns)"
-route_answer="$(prompt_routing "full")"
-DEFAULT_ROUTE_MODE="${route_answer%%|*}"
-DEFAULT_CUSTOM_ROUTES="${route_answer#*|}"
+prompt_dns
+DEFAULT_DNS="$DNS_RESULT"
+prompt_routing "full"
+DEFAULT_ROUTE_MODE="$ROUTE_MODE_RESULT"
+DEFAULT_CUSTOM_ROUTES="$ROUTE_CUSTOM_RESULT"
 
 echo
 echo "Configuration:"
@@ -376,7 +403,8 @@ echo "MTU: ${FORCED_MTU:-automatic}"
 echo
 
 if yesno "Create the first client now?" "y"; then
-    client_name="$(prompt "Client name" "client")"
+    ask "Client name" "client"
+    client_name="$INSTALL_PROMPT_RESULT"
     if [ -n "$FORCED_MTU" ]; then
         "$INSTALL_BIN" add "$client_name" --mtu "$FORCED_MTU"
     else
