@@ -8,6 +8,8 @@ system_dns() {
 
 prompt_dns() {
     local choice custom
+    DNS_RESULT=""
+
     {
         echo
         echo "Select DNS for VPN clients:"
@@ -21,26 +23,33 @@ prompt_dns() {
         echo
     } >&2
 
-    choice="$(prompt_input "DNS" "1")"
+    prompt_input "DNS" "1"
+    choice="$PROMPT_RESULT"
+
     case "$choice" in
-        1|"") echo "1.1.1.1,1.0.0.1" ;;
-        2) echo "8.8.8.8,8.8.4.4" ;;
-        3) echo "9.9.9.9,149.112.112.112" ;;
-        4) echo "94.140.14.14,94.140.15.15" ;;
-        5) system_dns ;;
+        1|"") DNS_RESULT="1.1.1.1,1.0.0.1" ;;
+        2) DNS_RESULT="8.8.8.8,8.8.4.4" ;;
+        3) DNS_RESULT="9.9.9.9,149.112.112.112" ;;
+        4) DNS_RESULT="94.140.14.14,94.140.15.15" ;;
+        5) DNS_RESULT="$(system_dns)" ;;
         6)
-            custom="$(prompt_input "DNS servers (comma separated)" "1.1.1.1,1.0.0.1")"
-            echo "$custom" | tr -d ' '
+            prompt_input "DNS servers (comma separated)" "1.1.1.1,1.0.0.1"
+            custom="$PROMPT_RESULT"
+            DNS_RESULT="$(echo "$custom" | tr -d ' ')"
             ;;
         *)
             echo "Invalid DNS selection; using Cloudflare." >&2
-            echo "1.1.1.1,1.0.0.1"
+            DNS_RESULT="1.1.1.1,1.0.0.1"
             ;;
     esac
 }
 
 prompt_routing() {
-    local default_mode="${1:-full}" choice mode custom=""
+    local default_mode="${1:-full}" choice custom=""
+
+    ROUTE_MODE_RESULT=""
+    ROUTE_CUSTOM_RESULT=""
+
     {
         echo
         echo "Routing mode:"
@@ -50,24 +59,31 @@ prompt_routing() {
         echo "  3) Custom routes"
         echo
     } >&2
+
     case "$default_mode" in
-        split) choice="$(prompt_input "Routing" "2")" ;;
-        custom) choice="$(prompt_input "Routing" "3")" ;;
-        *) choice="$(prompt_input "Routing" "1")" ;;
+        split) prompt_input "Routing" "2" ;;
+        custom) prompt_input "Routing" "3" ;;
+        *) prompt_input "Routing" "1" ;;
     esac
+    choice="$PROMPT_RESULT"
+
     case "$choice" in
-        2|split) mode="split" ;;
+        2|split)
+            ROUTE_MODE_RESULT="split"
+            ;;
         3|custom)
-            mode="custom"
-            custom="$(prompt_input "AllowedIPs (comma separated)" "")"
+            ROUTE_MODE_RESULT="custom"
+            prompt_input "AllowedIPs (comma separated)" ""
+            custom="$PROMPT_RESULT"
             custom="$(echo "$custom" | tr -d ' ')"
             [ -n "$custom" ] || return 1
+            ROUTE_CUSTOM_RESULT="$custom"
             ;;
-        *) mode="full" ;;
+        *)
+            ROUTE_MODE_RESULT="full"
+            ;;
     esac
-    echo "$mode|$custom"
 }
-
 routing_allowed_ips() {
     local mode="$1" custom="${2:-}" ipv6_enabled="${3:-0}"
     case "$mode" in
