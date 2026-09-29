@@ -113,16 +113,25 @@ Service:          active
 Listen port:      51820/UDP
 VPN subnet:       10.66.66.0/24
 MTU:              automatic
-Clients:          1 active / 1 saved
-Live peers:       1
+Clients:          1 enabled / 1 saved
+Loaded peers:     1
 
 Clients
 
-NAME             VPN IP          STATUS    ENDPOINT                 HANDSHAKE      RX          TX
-phone            10.66.66.2      active    <client-endpoint>        1m 12s ago     120 MiB     80 MiB
+NAME             VPN IP          CONFIG    ACTIVITY  ENDPOINT                 HANDSHAKE      RX          TX
+phone            10.66.66.2      enabled   recent    <client-endpoint>        1m 12s ago     120 MiB     80 MiB
 ```
 
-The endpoint shown by the local CLI is the current WireGuard peer endpoint observed by the server. The README intentionally uses placeholders and does not publish real deployment addresses or keys.
+The endpoint shown by the local CLI is the most recently observed WireGuard peer endpoint. `CONFIG` describes whether a saved client is enabled or revoked; it does not mean the device is currently connected.
+
+`ACTIVITY` is derived from the latest WireGuard handshake:
+
+- `recent` — latest handshake was within the last 3 minutes
+- `idle` — latest handshake is older than 3 minutes
+- `never` — the client has never completed a handshake
+- `-` — activity is not applicable, such as for a revoked client
+
+WireGuard does not expose a definitive online/offline session state, so `wg-vpn` intentionally avoids claiming that a client is currently online. The README uses placeholders and does not publish real deployment addresses or keys.
 
 ## Routing modes
 
