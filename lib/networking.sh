@@ -19,7 +19,8 @@ detect_interface_ipv6() {
 
 working_ipv6() {
     local iface="$1"
-    [ -n "$(detect_interface_ipv6 "$iface")" ] && ip -6 route get 2606:4700:4700::1111 >/dev/null 2>&1
+    [ -n "$(detect_interface_ipv6 "$iface")" ] &&
+        ip -6 route get 2606:4700:4700::1111 >/dev/null 2>&1
 }
 
 interface_mtu() {
@@ -36,6 +37,33 @@ subnet_conflicts() {
 udp_port_in_use() {
     local port="$1"
     ss -H -lun 2>/dev/null | awk '{print $5}' | grep -Eq "[:.]${port}$"
+}
+
+detect_virtualization() {
+    local virt=""
+    if command_exists systemd-detect-virt; then
+        virt="$(systemd-detect-virt 2>/dev/null || true)"
+    fi
+    [ -n "$virt" ] && echo "$virt" || echo "unknown"
+}
+
+tun_device_status() {
+    if [ -c /dev/net/tun ]; then
+        echo "available"
+    else
+        echo "not present"
+    fi
+}
+
+wireguard_interface_probe() {
+    local probe="wgp$$"
+    probe="${probe:0:15}"
+
+    if ip link add dev "$probe" type wireguard >/dev/null 2>&1; then
+        ip link del dev "$probe" >/dev/null 2>&1 || true
+        return 0
+    fi
+    return 1
 }
 
 record_forwarding_state() {
