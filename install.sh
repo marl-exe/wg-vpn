@@ -112,8 +112,24 @@ case "$ID" in
 esac
 
 if [ -f "$STATE_DIR/config.env" ]; then
-    echo "wg-vpn is already installed."
-    echo "Run: sudo wg-vpn status"
+    echo "wg-vpn existing installation detected."
+    echo "Updating CLI and management modules only..."
+    echo
+
+    mkdir -p "$INSTALL_LIB"
+
+    for file in common.sh config.sh networking.sh firewall.sh clients.sh mtu.sh backup.sh; do
+        curl -fsSL "$REPO_RAW/lib/$file" -o "$INSTALL_LIB/$file"
+        chmod 755 "$INSTALL_LIB/$file"
+    done
+
+    curl -fsSL "$REPO_RAW/bin/wg-vpn" -o "$INSTALL_BIN"
+    chmod 755 "$INSTALL_BIN"
+
+    echo "wg-vpn management files updated."
+    echo "Existing server keys, clients, WireGuard configuration, firewall settings, and VPN addresses were not replaced."
+    echo
+    "$INSTALL_BIN" status
     exit 0
 fi
 
