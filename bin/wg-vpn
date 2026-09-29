@@ -16,7 +16,7 @@ source "$LIB_DIR/clients.sh"
 source "$LIB_DIR/mtu.sh"
 source "$LIB_DIR/backup.sh"
 
-VERSION="0.1.2"
+VERSION="0.2.0"
 
 usage() {
     cat <<'EOF'
@@ -117,7 +117,7 @@ status_cmd() {
         [ -e "$meta" ] || continue
         total=$((total + 1))
         unset CLIENT_STATUS
-        source "$meta"
+        safe_source_env "$meta"
         [ "${CLIENT_STATUS:-}" != "active" ] || active=$((active + 1))
     done
 
@@ -149,7 +149,7 @@ status_cmd() {
         [ -e "$meta" ] || continue
 
         unset CLIENT_NAME CLIENT_IPV4 CLIENT_STATUS CLIENT_PUBLIC_KEY
-        source "$meta"
+        safe_source_env "$meta"
 
         endpoint="${peer_endpoint[$CLIENT_PUBLIC_KEY]-}"
         latest="${peer_latest[$CLIENT_PUBLIC_KEY]-0}"
@@ -259,8 +259,9 @@ add_cmd() {
         esac
         shift
     done
-    [[ "$keepalive" =~ ^[0-9]+$ ]] || die "Keepalive must be numeric."
-    [ -z "$mtu" ] || [[ "$mtu" =~ ^[0-9]+$ ]] || die "MTU must be numeric."
+    [[ "$keepalive" =~ ^[0-9]+$ ]] && [ "$keepalive" -le 65535 ] || die "Keepalive must be between 0 and 65535 seconds."
+    [ -z "$mtu" ] || valid_mtu "$mtu" || die "MTU must be between 1280 and 9000."
+    [ "$mode" != "custom" ] || valid_cidr_list "$routes" || die "--routes requires a valid comma-separated CIDR list."
     add_client "$name" "$mode" "$routes" "$dns" "$keepalive" "$mtu"
 }
 
@@ -273,27 +274,60 @@ main() {
             require_root
             load_config
             case "$cmd" in
-                add) shift; add_cmd "$@" ;;
-                revoke) [ "$#" -eq 2 ] || die "Usage: wg-vpn revoke NAME"; revoke_client "$2" ;;
-                remove) [ "$#" -eq 2 ] || die "Usage: wg-vpn remove NAME"; remove_client "$2" ;;
+                add)
+                    acquire_lock
+                    shift
+                    add_cmd "$@"
+                    ;;
+                revoke)
+                    [ "$#" -eq 2 ] || die "Usage: wg-vpn revoke NAME"
+                    acquire_lock
+                    revoke_client "$2"
+                    ;;
+                remove)
+                    [ "$#" -eq 2 ] || die "Usage: wg-vpn remove NAME"
+                    acquire_lock
+                    remove_client "$2"
+                    ;;
                 list) list_clients ;;
                 show) [ "$#" -eq 2 ] || die "Usage: wg-vpn show NAME"; show_client "$2" ;;
                 qr) [ "$#" -eq 2 ] || die "Usage: wg-vpn qr NAME"; qr_client "$2" ;;
                 status) status_cmd ;;
                 diagnose) diagnose_cmd ;;
                 restart)
+                    acquire_lock
                     systemctl restart "wg-quick@$WG_INTERFACE"
                     firewall_apply
                     status_cmd
                     ;;
                 optimize) optimize_wg ;;
                 mtu-test) mtu_test ;;
-                mtu-set) [ "$#" -eq 2 ] || die "Usage: wg-vpn mtu-set MTU"; apply_wg_mtu "$2" ;;
-                mtu-auto) clear_wg_mtu ;;
-                backup) backup_config "${2:-/root}" ;;
-                restore) [ "$#" -eq 2 ] || die "Usage: wg-vpn restore FILE"; restore_config "$2" ;;
-                firewall-apply) firewall_apply ;;
-                firewall-remove) firewall_remove ;;
+                mtu-set)
+                    [ "$#" -eq 2 ] || die "Usage: wg-vpn mtu-set MTU"
+                    acquire_lock
+                    apply_wg_mtu "$2"
+                    ;;
+                mtu-auto)
+                    acquire_lock
+                    clear_wg_mtu
+                    ;;
+                backup)
+                    acquire_lock
+                    backup_config "${2:-/root}"
+                    ;;
+                restore)
+                    [ "$#" -eq 2 ] || die "Usage: wg-vpn restore FILE"
+                    acquire_lock
+                    restore_config "$2"
+                    ;;
+                firewall-apply)
+                    acquire_lock
+                    firewall_apply
+                    ;;
+                firewall-remove)
+                    acquire_lock
+                    firewall_remove
+                    ;;
                 *) usage; exit 1 ;;
             esac
             ;;
