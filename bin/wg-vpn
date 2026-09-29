@@ -264,6 +264,7 @@ add_cmd() {
     done
     [[ "$keepalive" =~ ^[0-9]+$ ]] && [ "$keepalive" -le 65535 ] || die "Keepalive must be between 0 and 65535 seconds."
     [ -z "$mtu" ] || valid_mtu "$mtu" || die "MTU must be between 1280 and 9000."
+    [ -z "$dns" ] || valid_dns_list "$dns" || die "--dns requires a valid comma-separated IPv4/IPv6 address list."
     [ "$mode" != "custom" ] || valid_cidr_list "$routes" || die "--routes requires a valid comma-separated CIDR list."
     add_client "$name" "$mode" "$routes" "$dns" "$keepalive" "$mtu"
 }
