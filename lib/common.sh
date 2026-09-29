@@ -301,6 +301,9 @@ validate_client_values() {
 }
 
 try_load_config() {
+    [ -d "$WG_ROOT" ] && [ ! -L "$WG_ROOT" ] || return 1
+    [ -d "$WGVPN_STATE_DIR" ] && [ ! -L "$WGVPN_STATE_DIR" ] || return 1
+    [ -d "$WGVPN_CLIENT_META_DIR" ] && [ ! -L "$WGVPN_CLIENT_META_DIR" ] || return 1
     parse_env_file "$WGVPN_CONFIG" config && validate_config_values || return 1
     if [ -f "$WGVPN_STATE" ]; then
         parse_env_file "$WGVPN_STATE" state && validate_state_values || return 1
