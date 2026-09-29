@@ -36,8 +36,7 @@ source "$LIB_DIR/clients.sh"
 
 require_root
 acquire_lock
-safe_source_env "$CONFIG"
-[ ! -f "$STATE" ] || safe_source_env "$STATE"
+try_load_config || die "Invalid or unsafe wg-vpn configuration/state metadata."
 
 if [ "${1:-}" != "--yes" ] && ! prompt_yes_no; then
     echo "Uninstall cancelled."
@@ -46,15 +45,22 @@ fi
 
 firewall_remove || true
 
-systemctl disable --now wg-vpn-firewall.service 2>/dev/null || true
+if [ -e "$WGVPN_FIREWALL_SERVICE_FILE" ] || [ -L "$WGVPN_FIREWALL_SERVICE_FILE" ]; then
+    if firewall_service_owned; then
+        systemctl disable --now wg-vpn-firewall.service 2>/dev/null || true
+        rm -f "$WGVPN_FIREWALL_SERVICE_FILE"
+        systemctl daemon-reload
+    else
+        echo "WARNING: refusing to disable/remove unowned systemd unit: $WGVPN_FIREWALL_SERVICE_FILE" >&2
+    fi
+fi
+
 systemctl disable --now "wg-quick@$WG_INTERFACE" 2>/dev/null || true
-rm -f /etc/systemd/system/wg-vpn-firewall.service
-systemctl daemon-reload
 
 for meta in "$WGVPN_CLIENT_META_DIR"/*.env; do
     [ -e "$meta" ] || continue
     unset CLIENT_NAME
-    safe_source_env "$meta"
+    load_client_meta_file "$meta" || die "Invalid client metadata: $meta"
     valid_client_name "$CLIENT_NAME" || die "Invalid client name in metadata: $meta"
     rm -f -- "$(client_config_file "$CLIENT_NAME")"
 done
@@ -63,11 +69,11 @@ rm -f -- "$WG_ROOT/${WG_INTERFACE}.conf"
 rm -rf -- "$STATE_DIR"
 rmdir "$WGVPN_CLIENT_CONFIG_DIR" 2>/dev/null || true
 
-if [ -f /etc/sysctl.d/99-wg-vpn.conf ]; then
-    if grep -qx '# Managed by wg-vpn' /etc/sysctl.d/99-wg-vpn.conf; then
-        rm -f /etc/sysctl.d/99-wg-vpn.conf
+if [ -e "$WGVPN_SYSCTL_FILE" ] || [ -L "$WGVPN_SYSCTL_FILE" ]; then
+    if sysctl_file_owned; then
+        rm -f "$WGVPN_SYSCTL_FILE"
     else
-        echo "WARNING: /etc/sysctl.d/99-wg-vpn.conf does not contain the wg-vpn ownership marker; leaving it untouched." >&2
+        echo "WARNING: refusing to remove unowned sysctl file: $WGVPN_SYSCTL_FILE" >&2
     fi
 fi
 
@@ -89,7 +95,6 @@ fi
 
 rm -f /usr/local/bin/wg-vpn
 rm -rf -- "$LIB_DIR"
-rm -f "$WGVPN_LOCK_FILE"
 rmdir "$WG_ROOT" 2>/dev/null || true
 
 echo "wg-vpn removed."
