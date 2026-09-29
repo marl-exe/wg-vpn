@@ -612,11 +612,17 @@ echo
 if yesno "Create the first client now?" "y"; then
     ask "Client name" "client"
     client_name="$INSTALL_PROMPT_RESULT"
-    if [ -n "$FORCED_MTU" ]; then
-        "$INSTALL_BIN" add "$client_name" --mtu "$FORCED_MTU"
-    else
-        "$INSTALL_BIN" add "$client_name"
-    fi
+
+    first_client_args=("$client_name" "--dns" "$DEFAULT_DNS")
+    case "$DEFAULT_ROUTE_MODE" in
+        full) first_client_args+=("--full") ;;
+        split) first_client_args+=("--split") ;;
+        custom) first_client_args+=("--routes" "$DEFAULT_CUSTOM_ROUTES") ;;
+        *) die "Unexpected default routing mode: $DEFAULT_ROUTE_MODE" ;;
+    esac
+    [ -z "$FORCED_MTU" ] || first_client_args+=("--mtu" "$FORCED_MTU")
+
+    "$INSTALL_BIN" add "${first_client_args[@]}"
 fi
 
 echo
