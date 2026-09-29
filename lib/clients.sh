@@ -7,7 +7,7 @@ load_client() {
     local name="$1" file
     file="$(client_meta_file "$name")"
     [ -f "$file" ] || die "Client '$name' does not exist."
-    safe_source_env "$file"
+    load_client_meta_file "$file" || die "Invalid or unsafe client metadata: $file"
 }
 
 next_client_ipv4() {
@@ -19,7 +19,7 @@ next_client_ipv4() {
         for meta in "$WGVPN_CLIENT_META_DIR"/*.env; do
             [ -e "$meta" ] || continue
             unset CLIENT_IPV4
-            safe_source_env "$meta"
+            load_client_meta_file "$meta" || die "Invalid or unsafe client metadata: $meta"
             if [ "${CLIENT_IPV4:-}" = "$ip" ]; then
                 used=1
                 break
@@ -38,7 +38,7 @@ next_client_ipv6() {
         for meta in "$WGVPN_CLIENT_META_DIR"/*.env; do
             [ -e "$meta" ] || continue
             unset CLIENT_IPV6
-            safe_source_env "$meta"
+            load_client_meta_file "$meta" || die "Invalid or unsafe client metadata: $meta"
             if [ "${CLIENT_IPV6:-}" = "$candidate" ]; then
                 used=1
                 break
@@ -267,7 +267,7 @@ list_clients() {
     for meta in "$WGVPN_CLIENT_META_DIR"/*.env; do
         [ -e "$meta" ] || continue
         unset CLIENT_NAME CLIENT_IPV4 CLIENT_ROUTE_MODE CLIENT_STATUS
-        safe_source_env "$meta"
+        load_client_meta_file "$meta" || die "Invalid or unsafe client metadata: $meta"
         printf '%-20s %-16s %-10s %-8s\n' "$CLIENT_NAME" "$CLIENT_IPV4" "$CLIENT_ROUTE_MODE" "$CLIENT_STATUS"
         count=$((count + 1))
     done
