@@ -69,8 +69,13 @@ remove_peer_block_from_file() {
 }
 
 validate_server_config_file() {
-    local file="$1"
-    wg-quick strip "$file" >/dev/null 2>&1
+    local file="$1" tempdir staged rc=0
+    tempdir="$(mktemp -d)"
+    staged="$tempdir/${WG_INTERFACE}.conf"
+    cp -a "$file" "$staged"
+    wg-quick strip "$staged" >/dev/null 2>&1 || rc=$?
+    rm -rf "$tempdir"
+    return "$rc"
 }
 
 sync_interface_from_file() {
