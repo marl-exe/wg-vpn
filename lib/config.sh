@@ -7,42 +7,53 @@ system_dns() {
 }
 
 prompt_dns() {
-    local default_dns="${1:-1.1.1.1,1.0.0.1}" choice custom
+    local choice custom
     {
-        echo "DNS:"
-        echo "  1) Cloudflare - 1.1.1.1, 1.0.0.1"
-        echo "  2) Google     - 8.8.8.8, 8.8.4.4"
-        echo "  3) Quad9      - 9.9.9.9, 149.112.112.112"
-        echo "  4) System/default DNS"
-        echo "  5) Custom DNS"
-        echo "  6) Keep default ($default_dns)"
+        echo
+        echo "Select DNS for VPN clients:"
+        echo
+        echo "  1) Cloudflare   1.1.1.1 / 1.0.0.1"
+        echo "  2) Google       8.8.8.8 / 8.8.4.4"
+        echo "  3) Quad9        9.9.9.9 / 149.112.112.112"
+        echo "  4) AdGuard      94.140.14.14 / 94.140.15.15"
+        echo "  5) System DNS"
+        echo "  6) Custom"
+        echo
     } >&2
-    choice="$(prompt_input "Select DNS" "6")"
+
+    choice="$(prompt_input "DNS" "1")"
     case "$choice" in
-        1) echo "1.1.1.1,1.0.0.1" ;;
+        1|"") echo "1.1.1.1,1.0.0.1" ;;
         2) echo "8.8.8.8,8.8.4.4" ;;
         3) echo "9.9.9.9,149.112.112.112" ;;
-        4) system_dns ;;
-        5)
-            custom="$(prompt_input "DNS servers (comma separated)" "$default_dns")"
+        4) echo "94.140.14.14,94.140.15.15" ;;
+        5) system_dns ;;
+        6)
+            custom="$(prompt_input "DNS servers (comma separated)" "1.1.1.1,1.0.0.1")"
             echo "$custom" | tr -d ' '
             ;;
-        *) echo "$default_dns" ;;
+        *)
+            echo "Invalid DNS selection; using Cloudflare." >&2
+            echo "1.1.1.1,1.0.0.1"
+            ;;
     esac
 }
 
 prompt_routing() {
     local default_mode="${1:-full}" choice mode custom=""
     {
+        echo
         echo "Routing mode:"
+        echo
         echo "  1) Full tunnel"
         echo "  2) Split tunnel (VPN subnet only)"
         echo "  3) Custom routes"
+        echo
     } >&2
     case "$default_mode" in
-        split) choice="$(prompt_input "Select routing mode" "2")" ;;
-        custom) choice="$(prompt_input "Select routing mode" "3")" ;;
-        *) choice="$(prompt_input "Select routing mode" "1")" ;;
+        split) choice="$(prompt_input "Routing" "2")" ;;
+        custom) choice="$(prompt_input "Routing" "3")" ;;
+        *) choice="$(prompt_input "Routing" "1")" ;;
     esac
     case "$choice" in
         2|split) mode="split" ;;
