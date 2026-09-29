@@ -34,6 +34,8 @@ source "$LIB_DIR/firewall.sh"
 # shellcheck disable=SC1091
 source "$LIB_DIR/clients.sh"
 
+client_conf=""
+
 require_root
 acquire_lock
 try_load_config || die "Invalid or unsafe wg-vpn configuration/state metadata."
@@ -42,6 +44,8 @@ if [ "${1:-}" != "--yes" ] && ! prompt_yes_no; then
     echo "Uninstall cancelled."
     exit 0
 fi
+
+server_config_owned || die "Refusing to uninstall because the server config key does not match wg-vpn metadata."
 
 firewall_remove || true
 
@@ -62,7 +66,11 @@ for meta in "$WGVPN_CLIENT_META_DIR"/*.env; do
     unset CLIENT_NAME
     load_client_meta_file "$meta" || die "Invalid client metadata: $meta"
     valid_client_name "$CLIENT_NAME" || die "Invalid client name in metadata: $meta"
-    rm -f -- "$(client_config_file "$CLIENT_NAME")"
+    client_conf="$(client_config_file "$CLIENT_NAME")"
+    if [ -e "$client_conf" ] || [ -L "$client_conf" ]; then
+        client_config_owned "$CLIENT_NAME" || die "Refusing to delete client config whose key does not match metadata: $client_conf"
+        rm -f -- "$client_conf"
+    fi
 done
 
 rm -f -- "$WG_ROOT/${WG_INTERFACE}.conf"
