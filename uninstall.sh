@@ -9,18 +9,6 @@ LIB_DIR="/usr/local/lib/wg-vpn"
 
 die() { echo "wg-vpn uninstall: $*" >&2; exit 1; }
 
-prompt_yes_no() {
-    local answer=""
-    if [ -r /dev/tty ]; then
-        printf 'Remove wg-vpn configuration and clients? (y/N): ' > /dev/tty
-        IFS= read -r answer < /dev/tty || die "Input ended unexpectedly."
-    else
-        printf 'Remove wg-vpn configuration and clients? (y/N): ' >&2
-        IFS= read -r answer || die "Interactive input is required. Use --yes for non-interactive uninstall."
-    fi
-    [[ "$answer" =~ ^([Yy]|[Yy][Ee][Ss])$ ]]
-}
-
 [ "$(id -u)" -eq 0 ] || die "Run this script as root."
 [ -f "$CONFIG" ] || die "wg-vpn configuration was not found."
 [ -f "$LIB_DIR/common.sh" ] || die "wg-vpn libraries are missing; refusing an unsafe partial uninstall."
@@ -40,7 +28,7 @@ require_root
 acquire_lock
 try_load_config || die "Invalid or unsafe wg-vpn configuration/state metadata."
 
-if [ "${1:-}" != "--yes" ] && ! prompt_yes_no; then
+if [ "${1:-}" != "--yes" ] && ! prompt_yes_no "Remove wg-vpn configuration and clients?" "n"; then
     echo "Uninstall cancelled."
     exit 0
 fi
