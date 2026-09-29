@@ -16,7 +16,7 @@ source "$LIB_DIR/clients.sh"
 source "$LIB_DIR/mtu.sh"
 source "$LIB_DIR/backup.sh"
 
-VERSION="0.1.1"
+VERSION="0.1.2"
 
 usage() {
     cat <<'EOF'
@@ -45,6 +45,25 @@ Usage:
 
   wg-vpn version
 EOF
+}
+
+peer_activity() {
+    local timestamp="${1:-0}" now age
+
+    if [ -z "$timestamp" ] || [ "$timestamp" = "0" ]; then
+        echo "never"
+        return
+    fi
+
+    now="$(date +%s)"
+    age=$((now - timestamp))
+    [ "$age" -ge 0 ] || age=0
+
+    if [ "$age" -le 180 ]; then
+        echo "recent"
+    else
+        echo "idle"
+    fi
 }
 
 format_handshake_age() {
@@ -77,7 +96,7 @@ format_handshake_age() {
 
 status_cmd() {
     local total=0 active=0 meta peers=0
-    local public_key endpoint latest rx tx
+    local public_key endpoint latest rx tx config_state activity
     declare -A peer_endpoint=()
     declare -A peer_latest=()
     declare -A peer_rx=()
@@ -113,8 +132,8 @@ status_cmd() {
     echo "Firewall backend: $(detect_firewall_backend)"
     echo "MTU:              ${FORCED_MTU:-automatic}"
     echo "IPv6:             $([ "$IPV6_ENABLED" = "1" ] && echo enabled || echo disabled)"
-    echo "Clients:          $active active / $total saved"
-    echo "Live peers:       $peers"
+    echo "Clients:          $active enabled / $total saved"
+    echo "Loaded peers:     $peers"
 
     if [ "$total" -eq 0 ]; then
         return
@@ -123,7 +142,8 @@ status_cmd() {
     echo
     echo "Clients"
     echo
-    printf '%-16s %-15s %-9s %-24s %-14s %-11s %-11s\n'         "NAME" "VPN IP" "STATUS" "ENDPOINT" "HANDSHAKE" "RX" "TX"
+    printf '%-16s %-15s %-9s %-9s %-24s %-14s %-11s %-11s\n' \
+        "NAME" "VPN IP" "CONFIG" "ACTIVITY" "ENDPOINT" "HANDSHAKE" "RX" "TX"
 
     for meta in "$WGVPN_CLIENT_META_DIR"/*.env; do
         [ -e "$meta" ] || continue
@@ -138,7 +158,23 @@ status_cmd() {
 
         [ -n "$endpoint" ] && [ "$endpoint" != "(none)" ] || endpoint="-"
 
-        printf '%-16s %-15s %-9s %-24s %-14s %-11s %-11s\n'             "$CLIENT_NAME"             "$CLIENT_IPV4"             "$CLIENT_STATUS"             "$endpoint"             "$(format_handshake_age "$latest")"             "$(format_bytes "$rx")"             "$(format_bytes "$tx")"
+        if [ "$CLIENT_STATUS" = "active" ]; then
+            config_state="enabled"
+            activity="$(peer_activity "$latest")"
+        else
+            config_state="$CLIENT_STATUS"
+            activity="-"
+        fi
+
+        printf '%-16s %-15s %-9s %-9s %-24s %-14s %-11s %-11s\n' \
+            "$CLIENT_NAME" \
+            "$CLIENT_IPV4" \
+            "$config_state" \
+            "$activity" \
+            "$endpoint" \
+            "$(format_handshake_age "$latest")" \
+            "$(format_bytes "$rx")" \
+            "$(format_bytes "$tx")"
     done
 }
 
