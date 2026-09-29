@@ -6,6 +6,7 @@ stage_owned_config() {
 
     [ -f "$WG_ROOT/${WG_INTERFACE}.conf" ] && [ ! -L "$WG_ROOT/${WG_INTERFACE}.conf" ] ||
         die "Server configuration is missing or unsafe: $WG_ROOT/${WG_INTERFACE}.conf"
+    server_config_owned || die "Server configuration key does not match wg-vpn metadata."
     cp -a "$WG_ROOT/${WG_INTERFACE}.conf" "$destination/etc/wireguard/${WG_INTERFACE}.conf"
 
     [ -f "$WGVPN_CONFIG" ] && [ ! -L "$WGVPN_CONFIG" ] || die "wg-vpn configuration metadata is missing or unsafe."
@@ -22,7 +23,7 @@ stage_owned_config() {
 
         client_conf="$(client_config_file "$CLIENT_NAME")"
         if [ -e "$client_conf" ] || [ -L "$client_conf" ]; then
-            [ -f "$client_conf" ] && [ ! -L "$client_conf" ] || die "Unsafe client configuration: $client_conf"
+            client_config_owned "$CLIENT_NAME" || die "Client configuration key does not match metadata: $client_conf"
             cp -a "$client_conf" "$destination/etc/wireguard/clients/${CLIENT_NAME}.conf"
         fi
     done
@@ -53,6 +54,7 @@ validate_backup_archive() {
     local -A seen=()
 
     [ -f "$archive" ] && [ ! -L "$archive" ] || return 1
+    tar -tzf "$archive" >/dev/null 2>&1 || return 1
 
     while IFS= read -r member; do
         [ -n "$member" ] || continue
@@ -149,7 +151,10 @@ remove_current_owned_client_configs() {
         [ -e "$meta" ] || continue
         unset CLIENT_NAME
         load_client_meta_file "$meta" || return 1
-        rm -f -- "$(client_config_file "$CLIENT_NAME")" || return 1
+        if [ -e "$(client_config_file "$CLIENT_NAME")" ] || [ -L "$(client_config_file "$CLIENT_NAME")" ]; then
+            client_config_owned "$CLIENT_NAME" || return 1
+            rm -f -- "$(client_config_file "$CLIENT_NAME")" || return 1
+        fi
     done
 }
 
