@@ -7,6 +7,46 @@ INSTALL_BIN="/usr/local/bin/wg-vpn"
 WG_ROOT="/etc/wireguard"
 STATE_DIR="$WG_ROOT/wg-vpn"
 
+INSTALL_TEMP=""
+FRESH_INSTALL_CLAIMED=0
+INSTALL_COMMITTED=0
+
+cleanup_on_exit() {
+    local rc=$?
+    trap - EXIT
+
+    [ -z "${INSTALL_TEMP:-}" ] || rm -rf "$INSTALL_TEMP"
+
+    if [ "$rc" -ne 0 ] && [ "${FRESH_INSTALL_CLAIMED:-0}" = "1" ] && [ "${INSTALL_COMMITTED:-0}" != "1" ]; then
+        if declare -F firewall_remove >/dev/null 2>&1 && [ -n "${SERVER_PUBLIC_KEY:-}" ]; then
+            firewall_remove >/dev/null 2>&1 || true
+        fi
+
+        systemctl disable --now wg-vpn-firewall.service >/dev/null 2>&1 || true
+        [ -z "${WG_INTERFACE:-}" ] || systemctl disable --now "wg-quick@$WG_INTERFACE" >/dev/null 2>&1 || true
+        rm -f /etc/systemd/system/wg-vpn-firewall.service
+        systemctl daemon-reload >/dev/null 2>&1 || true
+
+        [ -z "${SERVER_CONF:-}" ] || rm -f -- "$SERVER_CONF"
+        rm -rf -- "$STATE_DIR"
+
+        if [ -f /etc/sysctl.d/99-wg-vpn.conf ] && grep -qx '# Managed by wg-vpn' /etc/sysctl.d/99-wg-vpn.conf; then
+            rm -f /etc/sysctl.d/99-wg-vpn.conf
+        fi
+
+        if [ -n "${PREVIOUS_IPV4_FORWARD:-}" ]; then
+            sysctl -w "net.ipv4.ip_forward=$PREVIOUS_IPV4_FORWARD" >/dev/null 2>&1 || true
+        fi
+        if [ -n "${PREVIOUS_IPV6_FORWARD:-}" ]; then
+            sysctl -w "net.ipv6.conf.all.forwarding=$PREVIOUS_IPV6_FORWARD" >/dev/null 2>&1 || true
+        fi
+    fi
+
+    exit "$rc"
+}
+
+trap cleanup_on_exit EXIT
+
 die() { echo "wg-vpn installer: $*" >&2; exit 1; }
 
 INSTALL_PROMPT_RESULT=""
@@ -189,10 +229,9 @@ if [ -f "$STATE_DIR/config.env" ]; then
         DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends util-linux
     }
 
-    update_temp="$(mktemp -d)"
-    trap 'rm -rf "$update_temp"' EXIT
-    stage_management_files "$update_temp"
-    install_staged_management_files "$update_temp"
+    INSTALL_TEMP="$(mktemp -d)"
+    stage_management_files "$INSTALL_TEMP"
+    install_staged_management_files "$INSTALL_TEMP"
 
     "$INSTALL_BIN" firewall-apply
 
@@ -233,10 +272,9 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends wiregu
 mkdir -p "$WG_ROOT"
 chmod 700 "$WG_ROOT"
 
-install_temp="$(mktemp -d)"
-trap 'rm -rf "$install_temp"' EXIT
-stage_management_files "$install_temp"
-install_staged_management_files "$install_temp"
+INSTALL_TEMP="$(mktemp -d)"
+stage_management_files "$INSTALL_TEMP"
+install_staged_management_files "$INSTALL_TEMP"
 
 source "$INSTALL_LIB/common.sh"
 source "$INSTALL_LIB/config.sh"
@@ -408,6 +446,7 @@ if ! (set -o noclobber; : > "$SERVER_CONF") 2>/dev/null; then
     die "Server configuration appeared during installation; refusing to overwrite: $SERVER_CONF"
 fi
 chmod 600 "$SERVER_CONF"
+FRESH_INSTALL_CLAIMED=1
 
 PREVIOUS_IPV4_FORWARD="$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 0)"
 PREVIOUS_IPV6_FORWARD="$(sysctl -n net.ipv6.conf.all.forwarding 2>/dev/null || echo 0)"
@@ -454,6 +493,7 @@ EOF
 systemctl daemon-reload
 systemctl enable --now "wg-quick@$WG_INTERFACE"
 systemctl enable --now wg-vpn-firewall.service
+INSTALL_COMMITTED=1
 
 echo
 echo "WireGuard server installed."
