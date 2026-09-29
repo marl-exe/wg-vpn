@@ -22,9 +22,11 @@ The current V1 has been successfully tested on a real Ubuntu VPS with a mobile W
 - Per-installation, ownership-verified firewall chains; never flush the host firewall
 - Live peer updates with `wg syncconf`
 - Transactional client add/revoke with rollback on sync failure
-- Process locking for mutating operations
-- Scoped backup/restore that preserves unrelated WireGuard configuration
-- Uninstall removes only files/rules owned by wg-vpn
+- Process locking shared by installer, updater, uninstall, and mutating CLI operations
+- Strict allowlisted metadata parsing; state files are never sourced or evaluated as shell code
+- Cryptographic ownership checks for server/client configs using their WireGuard key identity
+- Scoped backup/restore with verified rollback that preserves unrelated WireGuard configuration
+- Uninstall removes only files/rules whose ownership can be verified
 
 ## Install
 
@@ -40,7 +42,7 @@ To update an existing installation, rerun the same command:
 curl -fsSL https://raw.githubusercontent.com/marl-exe/wg-vpn/main/install.sh | sudo bash
 ```
 
-When an existing `wg-vpn` installation is detected, the installer stages and syntax-checks the CLI/management modules before replacing them. Existing server keys, client definitions, WireGuard configuration, and VPN addresses are preserved. Older fixed-name `WGVPN_*` firewall chains are migrated only when their exact legacy rule layout matches what wg-vpn previously created; otherwise they are left untouched.
+When an existing `wg-vpn` installation is detected, the installer resolves one Git commit and downloads every management module from that same commit. Files are staged and syntax-checked before replacement, the update shares the same process lock as the CLI, and the previous management files are retained for rollback if validation or firewall migration fails. Existing server keys, client definitions, WireGuard configuration, and VPN addresses are preserved. Older fixed-name `WGVPN_*` firewall chains are migrated only when their exact legacy rule layout matches what wg-vpn previously created; otherwise they are left untouched.
 
 ### Installer behavior
 
@@ -148,7 +150,7 @@ During installation and client creation:
 
 `wg-vpn` does **not** flush `INPUT`, `FORWARD`, Docker chains, or the nftables ruleset.
 
-Each installation derives unique firewall-chain names from its WireGuard server public key and places an ownership marker in those chains. An existing chain is never flushed or deleted unless wg-vpn can verify that marker.
+Each installation derives unique firewall-chain names from its WireGuard server public key. Existing chains are reused or deleted only when the complete expected rule set matches the current wg-vpn configuration; an ownership marker alone is not sufficient. Firewall removal preflights IPv4 and IPv6 ownership before deleting either family, and partial apply attempts roll back objects created by that attempt.
 
 NAT is scoped to the configured VPN subnet and detected public interface. Upgrade cleanup for the older fixed-name `WGVPN_INPUT`, `WGVPN_FORWARD`, and `WGVPN_NAT` chains occurs only if every legacy chain exactly matches wg-vpn's former rule layout.
 
@@ -176,9 +178,11 @@ Backups contain only the active wg-vpn server configuration, wg-vpn metadata, an
 
 Restore rejects absolute/traversal paths, symlinks, hardlinks, and special files. V1 restore requires the backup to use the current WireGuard interface name. Unrelated WireGuard interfaces and unrelated files under `/etc/wireguard` are preserved.
 
-If activation of a restored configuration fails, wg-vpn attempts to restore the configuration that was active immediately before the restore.
+Before extraction, restore rejects unsafe/duplicate archive members, links, special files, unexpected paths, invalid metadata, and metadata/server-peer inconsistencies. State/config files use strict per-file key allowlists and are parsed as data rather than executed.
 
-Mutating CLI operations use a lock so two add/remove/restore/firewall operations cannot modify wg-vpn state concurrently.
+If activation of a restored configuration fails, wg-vpn restores the pre-restore tree and reports rollback success only after the old WireGuard service and owned firewall rules are verified active again.
+
+The installer, updater, uninstall path, and mutating CLI operations use the same lock so concurrent changes cannot race each other. The lock file itself is deliberately left in `/run/lock` rather than unlinked while held.
 
 ## Runtime files
 
@@ -209,7 +213,7 @@ The original V1 networking path has completed a successful real-world installati
 - iptables-nft firewall integration
 - Automatic MTU operation
 
-The current hardened `0.2.x` code also passes Bash syntax checks, ShellCheck, and repository safety regression tests covering MTU/CIDR validation, unsafe state-file rejection, firewall-flush guards, whole-`/etc/wireguard` deletion guards, and piped-installer prompt regressions.
+The current hardened `0.3.x` code also passes Bash syntax checks, ShellCheck, and repository safety regression tests covering strict metadata parsing, hostile/duplicate archive entries, IPv4/IPv6 CIDR validation, DNS/endpoint validation, firewall-flush guards, whole-`/etc/wireguard` deletion guards, lock-file preservation, and piped-installer prompt regressions.
 
 The new ownership, transactional restore/client, and failure-rollback paths still need broader runtime testing on additional clean VPSes before being treated as production-validated across environments.
 
