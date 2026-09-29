@@ -4,6 +4,8 @@ Lightweight, low-latency WireGuard VPN installer and CLI manager for Ubuntu/Debi
 
 `wg-vpn` is designed for VPSes that already run other workloads. It installs native WireGuard, makes narrowly scoped networking changes, and provides a CLI manager without requiring Docker, Node.js, Python, a database, a Web UI, or an always-running management daemon.
 
+The current V1 has been successfully tested on a real Ubuntu VPS with a mobile WireGuard client, including installation, full-tunnel routing, live handshakes, traffic transfer, and client management.
+
 ## Design goals
 
 - Native kernel WireGuard where supported
@@ -28,6 +30,14 @@ curl -fsSL https://raw.githubusercontent.com/marl-exe/wg-vpn/main/install.sh | s
 ```
 
 The installer currently targets Ubuntu and Debian with systemd.
+
+To update an existing installation, rerun the same command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/marl-exe/wg-vpn/main/install.sh | sudo bash
+```
+
+When an existing `wg-vpn` installation is detected, the installer updates only the CLI and management modules. Existing server keys, client definitions, WireGuard configuration, VPN addresses, and firewall settings are preserved.
 
 ### Installer behavior
 
@@ -91,6 +101,29 @@ wg-vpn backup
 wg-vpn restore /path/to/backup.tar.gz
 ```
 
+## Status output
+
+`wg-vpn status` includes server health plus per-client WireGuard activity:
+
+```text
+wg-vpn
+
+Interface:        wg0
+Service:          active
+Listen port:      51820/UDP
+VPN subnet:       10.66.66.0/24
+MTU:              automatic
+Clients:          1 active / 1 saved
+Live peers:       1
+
+Clients
+
+NAME             VPN IP          STATUS    ENDPOINT                 HANDSHAKE      RX          TX
+phone            10.66.66.2      active    <client-endpoint>        1m 12s ago     120 MiB     80 MiB
+```
+
+The endpoint shown by the local CLI is the current WireGuard peer endpoint observed by the server. The README intentionally uses placeholders and does not publish real deployment addresses or keys.
+
 ## Routing modes
 
 During installation and client creation:
@@ -135,9 +168,20 @@ wg-vpn optimize
         └── laptop.env
 ```
 
-## Status
+## Testing status
 
-Initial V1 implementation. Test on a VPS you can recover before relying on it for remote access.
+V1 has completed a successful real-world installation and connectivity test with a mobile client. The test verified:
+
+- WireGuard service startup
+- Full-tunnel Internet routing
+- Peer handshakes
+- Bidirectional traffic transfer
+- Client configuration and QR generation
+- `wg-vpn status`
+- iptables-nft firewall integration
+- Automatic MTU operation
+
+Further testing across additional VPS providers, container types, IPv6 environments, and unusual firewall configurations is still recommended before treating every environment as production-validated.
 
 ## License
 
