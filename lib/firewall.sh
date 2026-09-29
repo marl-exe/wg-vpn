@@ -431,8 +431,9 @@ firewall_apply() {
         die "Could not apply IPv6 firewall rules."
     fi
 
-    remove_legacy_ipv4_if_owned
-    remove_legacy_ipv6_if_owned
+    remove_legacy_ipv4_if_owned || warn "Could not fully remove legacy IPv4 chains; new owned firewall rules remain active."
+    remove_legacy_ipv6_if_owned || warn "Could not fully remove legacy IPv6 chains; new owned firewall rules remain active."
+    return 0
 }
 
 firewall_remove_ipv4() {
