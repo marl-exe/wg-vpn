@@ -436,6 +436,39 @@ firewall_apply() {
     return 0
 }
 
+firewall_remove_preflight_ipv4() {
+    command_exists iptables || return 0
+    firewall_init_names
+
+    if chain_exists4 filter "$WGVPN_INPUT_CHAIN" ||
+       chain_exists4 filter "$WGVPN_FORWARD_CHAIN" ||
+       chain_exists4 nat "$WGVPN_NAT_CHAIN"; then
+        chain_exists4 filter "$WGVPN_INPUT_CHAIN" &&
+        chain_exists4 filter "$WGVPN_FORWARD_CHAIN" &&
+        chain_exists4 nat "$WGVPN_NAT_CHAIN" &&
+        managed_chain_matches4 input &&
+        managed_chain_matches4 forward &&
+        managed_chain_matches4 nat || return 1
+    fi
+}
+
+firewall_remove_preflight_ipv6() {
+    [ "${IPV6_ENABLED:-0}" = "1" ] || return 0
+    command_exists ip6tables || return 0
+    firewall_init_names
+
+    if chain_exists6 filter "$WGVPN_INPUT_CHAIN" ||
+       chain_exists6 filter "$WGVPN_FORWARD_CHAIN" ||
+       chain_exists6 nat "$WGVPN_NAT_CHAIN"; then
+        chain_exists6 filter "$WGVPN_INPUT_CHAIN" &&
+        chain_exists6 filter "$WGVPN_FORWARD_CHAIN" &&
+        chain_exists6 nat "$WGVPN_NAT_CHAIN" &&
+        managed_chain_matches6 input &&
+        managed_chain_matches6 forward &&
+        managed_chain_matches6 nat || return 1
+    fi
+}
+
 firewall_remove_ipv4() {
     command_exists iptables || return 0
     firewall_init_names
@@ -480,10 +513,17 @@ firewall_remove_ipv6() {
 }
 
 firewall_remove() {
-    local rc=0
-    firewall_remove_ipv6 || rc=1
-    firewall_remove_ipv4 || rc=1
-    return "$rc"
+    firewall_remove_preflight_ipv6 || {
+        warn "Refusing firewall removal because IPv6 ownership/rule verification failed."
+        return 1
+    }
+    firewall_remove_preflight_ipv4 || {
+        warn "Refusing firewall removal because IPv4 ownership/rule verification failed."
+        return 1
+    }
+
+    firewall_remove_ipv6 || return 1
+    firewall_remove_ipv4 || return 1
 }
 
 firewall_rules_present() {
