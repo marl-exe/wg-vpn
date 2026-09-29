@@ -156,5 +156,11 @@ grep -Fq 'prompt_yes_no "Remove wg-vpn configuration and clients?" "n"' uninstal
 
 grep -Fq 'REPO_COMMIT' install.sh || fail "installer does not pin a repository commit"
 grep -Fq 'install_firewall_service_unit' install.sh || fail "installer bypasses managed systemd-unit ownership helper"
+grep -Fq 'wg-quick strip "./${WG_INTERFACE}.conf"' lib/clients.sh ||
+    fail "client staging validator does not force wg-quick file-path mode"
+grep -Fq 'first_client_args=("$client_name" "--dns" "$DEFAULT_DNS")' install.sh ||
+    fail "first installer-created client does not inherit selected DNS"
+grep -Fq 'first_client_args+=("--full")' install.sh ||
+    fail "first installer-created client does not inherit selected routing"
 
 echo "Safety regression checks passed."
