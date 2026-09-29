@@ -324,12 +324,20 @@ main() {
                     restore_config "$2"
                     ;;
                 firewall-apply)
-                    acquire_lock
-                    firewall_apply
+                    if firewall_rules_present; then
+                        :
+                    else
+                        acquire_lock
+                        firewall_apply
+                    fi
                     ;;
                 firewall-remove)
-                    acquire_lock
-                    firewall_remove
+                    if firewall_rules_present; then
+                        acquire_lock
+                        firewall_remove
+                    else
+                        :
+                    fi
                     ;;
                 *) usage; exit 1 ;;
             esac
