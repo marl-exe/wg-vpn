@@ -123,6 +123,21 @@ echo "This installs native WireGuard and a CLI manager."
 echo "It does not install Docker, Node.js, Python, a database, or a Web UI."
 echo "Existing firewall tables/chains are never flushed."
 echo
+echo "Setup mode:"
+echo
+echo "  1) Automatic (recommended)"
+echo "  2) Manual / Advanced"
+echo
+
+setup_choice="$(prompt "Mode" "1")"
+case "$setup_choice" in
+    2|manual|advanced) SETUP_MODE="manual" ;;
+    *) SETUP_MODE="automatic" ;;
+esac
+
+echo
+echo "Installing required packages..."
+echo
 
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends     wireguard     wireguard-tools     qrencode     iptables     iproute2     ca-certificates     curl
@@ -143,50 +158,115 @@ source "$INSTALL_LIB/config.sh"
 source "$INSTALL_LIB/networking.sh"
 source "$INSTALL_LIB/firewall.sh"
 
+VIRTUALIZATION="$(detect_virtualization)"
+TUN_STATUS="$(tun_device_status)"
+
+command_exists modprobe && modprobe wireguard >/dev/null 2>&1 || true
+
+echo
+echo "Environment:"
+echo
+echo "  Virtualization:     $VIRTUALIZATION"
+echo "  TUN/TAP device:     $TUN_STATUS"
+
+if wireguard_interface_probe; then
+    echo "  Native WireGuard:   available"
+else
+    echo "  Native WireGuard:   unavailable"
+    echo
+    if [[ "$VIRTUALIZATION" =~ ^(lxc|lxc-libvirt|openvz|docker|podman|container-other)$ ]]; then
+        die "This container cannot create a WireGuard interface. The host may need to provide WireGuard kernel support and allow the required network capabilities."
+    fi
+    die "This system cannot create a native WireGuard interface. Check kernel WireGuard support and network capabilities."
+fi
+
 echo
 echo "Detecting network configuration..."
 echo
 
-PUBLIC_INTERFACE="$(detect_public_interface)"
-if [ -z "$PUBLIC_INTERFACE" ]; then
-    PUBLIC_INTERFACE="$(prompt "Could not auto-detect the public interface. Enter interface name" "")"
-fi
-[ -n "$PUBLIC_INTERFACE" ] || die "A public network interface is required."
-ip link show dev "$PUBLIC_INTERFACE" >/dev/null 2>&1 || die "Interface $PUBLIC_INTERFACE does not exist."
-echo "  Public interface:   $PUBLIC_INTERFACE"
+DETECTED_PUBLIC_INTERFACE="$(detect_public_interface || true)"
+DETECTED_WG_INTERFACE="$(choose_wg_interface || true)"
+DETECTED_IPV4_SUBNET="$(choose_ipv4_subnet || true)"
+DETECTED_PORT="$(choose_udp_port || true)"
+DETECTED_ENDPOINT="$(detect_endpoint || true)"
 
-WG_INTERFACE="$(choose_wg_interface || true)"
-if [ -z "$WG_INTERFACE" ]; then
-    WG_INTERFACE="$(prompt "Could not find a free wg0-wg9 interface. Enter WireGuard interface" "wg-vpn0")"
-fi
-valid_interface_name "$WG_INTERFACE" || die "Invalid WireGuard interface name."
-[ ! -e "$WG_ROOT/${WG_INTERFACE}.conf" ] || die "$WG_ROOT/${WG_INTERFACE}.conf already exists. Refusing to overwrite it."
-ip link show "$WG_INTERFACE" >/dev/null 2>&1 && die "Interface $WG_INTERFACE already exists. Refusing to take it over."
-echo "  WireGuard interface: $WG_INTERFACE"
+if [ "$SETUP_MODE" = "manual" ]; then
+    echo "Manual / Advanced configuration"
+    echo "Detected values are shown as defaults. Press Enter to keep a value."
+    echo
 
-WG_IPV4_SUBNET="$(choose_ipv4_subnet || true)"
-if [ -z "$WG_IPV4_SUBNET" ]; then
-    WG_IPV4_SUBNET="$(prompt "Could not find a free default VPN subnet. Enter IPv4 /24 subnet" "10.66.66.0/24")"
+    PUBLIC_INTERFACE="$(prompt "Public interface" "$DETECTED_PUBLIC_INTERFACE")"
+    [ -n "$PUBLIC_INTERFACE" ] || die "A public network interface is required."
+    ip link show dev "$PUBLIC_INTERFACE" >/dev/null 2>&1 || die "Interface $PUBLIC_INTERFACE does not exist."
+
+    WG_INTERFACE="$(prompt "WireGuard interface" "${DETECTED_WG_INTERFACE:-wg0}")"
+    valid_interface_name "$WG_INTERFACE" || die "Invalid WireGuard interface name."
+    [ ! -e "$WG_ROOT/${WG_INTERFACE}.conf" ] || die "$WG_ROOT/${WG_INTERFACE}.conf already exists. Refusing to overwrite it."
+    ip link show "$WG_INTERFACE" >/dev/null 2>&1 && die "Interface $WG_INTERFACE already exists. Refusing to take it over."
+
+    WG_IPV4_SUBNET="$(prompt "VPN IPv4 subnet (/24)" "${DETECTED_IPV4_SUBNET:-10.66.66.0/24}")"
+    valid_ipv4_24_cidr "$WG_IPV4_SUBNET" || die "V1 currently requires a valid IPv4 /24 subnet."
+    subnet_conflicts "$WG_IPV4_SUBNET" && die "$WG_IPV4_SUBNET already appears in the routing table."
+
+    WG_PORT="$(prompt "WireGuard UDP port" "${DETECTED_PORT:-51820}")"
+    valid_port "$WG_PORT" || die "Invalid UDP port."
+    udp_port_in_use "$WG_PORT" && die "UDP port $WG_PORT is already in use."
+
+    ENDPOINT_HOST="$(prompt "Public IP or DNS name" "$DETECTED_ENDPOINT")"
+    [ -n "$ENDPOINT_HOST" ] || die "A public IP or DNS endpoint is required."
+
+    mtu_input="$(prompt "MTU (automatic or number)" "automatic")"
+    case "$mtu_input" in
+        automatic|auto|"") FORCED_MTU="" ;;
+        *)
+            [[ "$mtu_input" =~ ^[0-9]+$ ]] || die "MTU must be 'automatic' or a number."
+            [ "$mtu_input" -ge 1280 ] && [ "$mtu_input" -le 9000 ] || die "MTU must be between 1280 and 9000."
+            FORCED_MTU="$mtu_input"
+            ;;
+    esac
+else
+    PUBLIC_INTERFACE="$DETECTED_PUBLIC_INTERFACE"
+    if [ -z "$PUBLIC_INTERFACE" ]; then
+        PUBLIC_INTERFACE="$(prompt "Could not auto-detect the public interface. Enter interface name" "")"
+    fi
+    [ -n "$PUBLIC_INTERFACE" ] || die "A public network interface is required."
+    ip link show dev "$PUBLIC_INTERFACE" >/dev/null 2>&1 || die "Interface $PUBLIC_INTERFACE does not exist."
+
+    WG_INTERFACE="$DETECTED_WG_INTERFACE"
+    if [ -z "$WG_INTERFACE" ]; then
+        WG_INTERFACE="$(prompt "Could not find a free wg0-wg9 interface. Enter WireGuard interface" "wg-vpn0")"
+    fi
+    valid_interface_name "$WG_INTERFACE" || die "Invalid WireGuard interface name."
+
+    WG_IPV4_SUBNET="$DETECTED_IPV4_SUBNET"
+    if [ -z "$WG_IPV4_SUBNET" ]; then
+        WG_IPV4_SUBNET="$(prompt "Could not find a free default VPN subnet. Enter IPv4 /24 subnet" "10.66.66.0/24")"
+    fi
+    valid_ipv4_24_cidr "$WG_IPV4_SUBNET" || die "V1 currently requires a valid IPv4 /24 subnet."
+
+    WG_PORT="$DETECTED_PORT"
+    if [ -z "$WG_PORT" ]; then
+        WG_PORT="$(prompt "Could not find a free UDP port. Enter WireGuard port" "51820")"
+    fi
+    valid_port "$WG_PORT" || die "Invalid UDP port."
+
+    ENDPOINT_HOST="$DETECTED_ENDPOINT"
+    if [ -z "$ENDPOINT_HOST" ]; then
+        ENDPOINT_HOST="$(prompt "Could not auto-detect the public IP. Enter public IP or DNS name" "")"
+    fi
+    [ -n "$ENDPOINT_HOST" ] || die "A public IP or DNS endpoint is required."
+
+    FORCED_MTU=""
 fi
-valid_ipv4_24_cidr "$WG_IPV4_SUBNET" || die "V1 currently requires a valid IPv4 /24 subnet."
-subnet_conflicts "$WG_IPV4_SUBNET" && die "$WG_IPV4_SUBNET already appears in the routing table."
+
 WG_SERVER_IPV4="$(ipv4_prefix_from_cidr "$WG_IPV4_SUBNET").1"
-echo "  VPN subnet:         $WG_IPV4_SUBNET"
 
-WG_PORT="$(choose_udp_port || true)"
-if [ -z "$WG_PORT" ]; then
-    WG_PORT="$(prompt "Could not find a free UDP port. Enter WireGuard port" "51820")"
-fi
-valid_port "$WG_PORT" || die "Invalid UDP port."
-udp_port_in_use "$WG_PORT" && die "UDP port $WG_PORT is already in use."
-echo "  WireGuard port:     $WG_PORT/UDP"
-
-ENDPOINT_HOST="$(detect_endpoint || true)"
-if [ -z "$ENDPOINT_HOST" ]; then
-    ENDPOINT_HOST="$(prompt "Could not auto-detect the public IP. Enter public IP or DNS name" "")"
-fi
-[ -n "$ENDPOINT_HOST" ] || die "A public IP or DNS endpoint is required."
-echo "  Public endpoint:    $ENDPOINT_HOST"
+echo "  Public interface:    $PUBLIC_INTERFACE"
+echo "  WireGuard interface: $WG_INTERFACE"
+echo "  VPN subnet:          $WG_IPV4_SUBNET"
+echo "  WireGuard port:      $WG_PORT/UDP"
+echo "  Public endpoint:     $ENDPOINT_HOST"
+echo "  MTU:                 ${FORCED_MTU:-automatic}"
 
 IPV6_ENABLED=0
 WG_IPV6_PREFIX="fd66:66:66"
@@ -194,12 +274,12 @@ WG_IPV6_SUBNET="${WG_IPV6_PREFIX}::/64"
 WG_SERVER_IPV6="${WG_IPV6_PREFIX}::1"
 
 if working_ipv6 "$PUBLIC_INTERFACE"; then
-    echo "  Public IPv6:        detected"
+    echo "  Public IPv6:         detected"
     if yesno "Enable IPv6 for VPN clients?" "n"; then
         IPV6_ENABLED=1
     fi
 else
-    echo "  Public IPv6:        not detected"
+    echo "  Public IPv6:         not detected"
 fi
 
 DEFAULT_DNS="$(prompt_dns)"
@@ -210,14 +290,16 @@ DEFAULT_CUSTOM_ROUTES="${route_answer#*|}"
 echo
 echo "Configuration:"
 echo
-echo "  Public interface:   $PUBLIC_INTERFACE"
-echo "  Public endpoint:    $ENDPOINT_HOST:$WG_PORT"
+echo "  Setup mode:          $SETUP_MODE"
+echo "  Virtualization:      $VIRTUALIZATION"
+echo "  Public interface:    $PUBLIC_INTERFACE"
+echo "  Public endpoint:     $ENDPOINT_HOST:$WG_PORT"
 echo "  WireGuard interface: $WG_INTERFACE"
-echo "  VPN subnet:         $WG_IPV4_SUBNET"
-echo "  DNS:                $DEFAULT_DNS"
-echo "  Routing:            $DEFAULT_ROUTE_MODE"
-echo "  IPv6:               $([ "$IPV6_ENABLED" = "1" ] && echo enabled || echo disabled)"
-echo "  MTU:                automatic"
+echo "  VPN subnet:          $WG_IPV4_SUBNET"
+echo "  DNS:                 $DEFAULT_DNS"
+echo "  Routing:             $DEFAULT_ROUTE_MODE"
+echo "  IPv6:                $([ "$IPV6_ENABLED" = "1" ] && echo enabled || echo disabled)"
+echo "  MTU:                 ${FORCED_MTU:-automatic}"
 echo
 
 safe_mkdirs
@@ -225,12 +307,12 @@ safe_mkdirs
 PREVIOUS_IPV4_FORWARD="$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 0)"
 PREVIOUS_IPV6_FORWARD="$(sysctl -n net.ipv6.conf.all.forwarding 2>/dev/null || echo 0)"
 
-write_env_file "$WGVPN_STATE"     "PREVIOUS_IPV4_FORWARD=$PREVIOUS_IPV4_FORWARD"     "PREVIOUS_IPV6_FORWARD=$PREVIOUS_IPV6_FORWARD"
+write_env_file "$WGVPN_STATE"     "PREVIOUS_IPV4_FORWARD=$PREVIOUS_IPV4_FORWARD"     "PREVIOUS_IPV6_FORWARD=$PREVIOUS_IPV6_FORWARD"     "VIRTUALIZATION=$VIRTUALIZATION"     "TUN_STATUS=$TUN_STATUS"
 
 SERVER_PRIVATE_KEY="$(wg genkey)"
 SERVER_PUBLIC_KEY="$(printf '%s' "$SERVER_PRIVATE_KEY" | wg pubkey)"
 
-write_env_file "$WGVPN_CONFIG"     "WG_INTERFACE=$WG_INTERFACE"     "WG_IPV4_SUBNET=$WG_IPV4_SUBNET"     "WG_SERVER_IPV4=$WG_SERVER_IPV4"     "WG_PORT=$WG_PORT"     "PUBLIC_INTERFACE=$PUBLIC_INTERFACE"     "ENDPOINT_HOST=$ENDPOINT_HOST"     "SERVER_PUBLIC_KEY=$SERVER_PUBLIC_KEY"     "IPV6_ENABLED=$IPV6_ENABLED"     "WG_IPV6_PREFIX=$WG_IPV6_PREFIX"     "WG_IPV6_SUBNET=$WG_IPV6_SUBNET"     "WG_SERVER_IPV6=$WG_SERVER_IPV6"     "DEFAULT_DNS=$DEFAULT_DNS"     "DEFAULT_ROUTE_MODE=$DEFAULT_ROUTE_MODE"     "DEFAULT_CUSTOM_ROUTES=$DEFAULT_CUSTOM_ROUTES"     "FORCED_MTU="
+write_env_file "$WGVPN_CONFIG"     "WG_INTERFACE=$WG_INTERFACE"     "WG_IPV4_SUBNET=$WG_IPV4_SUBNET"     "WG_SERVER_IPV4=$WG_SERVER_IPV4"     "WG_PORT=$WG_PORT"     "PUBLIC_INTERFACE=$PUBLIC_INTERFACE"     "ENDPOINT_HOST=$ENDPOINT_HOST"     "SERVER_PUBLIC_KEY=$SERVER_PUBLIC_KEY"     "IPV6_ENABLED=$IPV6_ENABLED"     "WG_IPV6_PREFIX=$WG_IPV6_PREFIX"     "WG_IPV6_SUBNET=$WG_IPV6_SUBNET"     "WG_SERVER_IPV6=$WG_SERVER_IPV6"     "DEFAULT_DNS=$DEFAULT_DNS"     "DEFAULT_ROUTE_MODE=$DEFAULT_ROUTE_MODE"     "DEFAULT_CUSTOM_ROUTES=$DEFAULT_CUSTOM_ROUTES"     "FORCED_MTU=$FORCED_MTU"
 
 {
     echo "[Interface]"
@@ -240,6 +322,7 @@ write_env_file "$WGVPN_CONFIG"     "WG_INTERFACE=$WG_INTERFACE"     "WG_IPV4_SUB
         echo "Address = $WG_SERVER_IPV4/24"
     fi
     echo "ListenPort = $WG_PORT"
+    [ -z "$FORCED_MTU" ] || echo "MTU = $FORCED_MTU"
     echo "PrivateKey = $SERVER_PRIVATE_KEY"
 } > "$WG_ROOT/${WG_INTERFACE}.conf"
 
@@ -273,12 +356,16 @@ echo "Interface: $WG_INTERFACE"
 echo "VPN subnet: $WG_IPV4_SUBNET"
 echo "Endpoint: $ENDPOINT_HOST:$WG_PORT"
 echo "Firewall backend: $(detect_firewall_backend)"
-echo "MTU: automatic"
+echo "MTU: ${FORCED_MTU:-automatic}"
 echo
 
 if yesno "Create the first client now?" "y"; then
     client_name="$(prompt "Client name" "client")"
-    "$INSTALL_BIN" add "$client_name"
+    if [ -n "$FORCED_MTU" ]; then
+        "$INSTALL_BIN" add "$client_name" --mtu "$FORCED_MTU"
+    else
+        "$INSTALL_BIN" add "$client_name"
+    fi
 fi
 
 echo
