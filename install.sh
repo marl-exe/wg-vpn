@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-REPO_RAW="${WGVPN_REPO_RAW:-https://raw.githubusercontent.com/marl-exe/wg-vpn/main}"
+REPO_RAW_OVERRIDE="${WGVPN_REPO_RAW:-}"
+REPO_COMMIT="${WGVPN_REPO_COMMIT:-}"
+REPO_RAW=""
 INSTALL_LIB="/usr/local/lib/wg-vpn"
 INSTALL_BIN="/usr/local/bin/wg-vpn"
 WG_ROOT="/etc/wireguard"
 STATE_DIR="$WG_ROOT/wg-vpn"
+LOCK_FILE="/run/lock/wg-vpn.lock"
+SERVICE_FILE="/etc/systemd/system/wg-vpn-firewall.service"
+SYSCTL_FILE="/etc/sysctl.d/99-wg-vpn.conf"
 
 INSTALL_TEMP=""
+UPDATE_BACKUP=""
 FRESH_INSTALL_CLAIMED=0
+FRESH_STATE_CREATED=0
+FRESH_MANAGEMENT_INSTALLED=0
 INSTALL_COMMITTED=0
 
 cleanup_on_exit() {
@@ -16,22 +24,30 @@ cleanup_on_exit() {
     trap - EXIT
 
     [ -z "${INSTALL_TEMP:-}" ] || rm -rf "$INSTALL_TEMP"
+    [ -z "${UPDATE_BACKUP:-}" ] || rm -rf "$UPDATE_BACKUP"
 
-    if [ "$rc" -ne 0 ] && [ "${FRESH_INSTALL_CLAIMED:-0}" = "1" ] && [ "${INSTALL_COMMITTED:-0}" != "1" ]; then
+    if [ "$rc" -ne 0 ] && [ "${INSTALL_COMMITTED:-0}" != "1" ]; then
         if declare -F firewall_remove >/dev/null 2>&1 && [ -n "${SERVER_PUBLIC_KEY:-}" ]; then
             firewall_remove >/dev/null 2>&1 || true
         fi
 
-        systemctl disable --now wg-vpn-firewall.service >/dev/null 2>&1 || true
+        if declare -F firewall_service_owned >/dev/null 2>&1 && firewall_service_owned; then
+            systemctl disable --now wg-vpn-firewall.service >/dev/null 2>&1 || true
+            rm -f "$SERVICE_FILE"
+            systemctl daemon-reload >/dev/null 2>&1 || true
+        fi
+
         [ -z "${WG_INTERFACE:-}" ] || systemctl disable --now "wg-quick@$WG_INTERFACE" >/dev/null 2>&1 || true
-        rm -f /etc/systemd/system/wg-vpn-firewall.service
-        systemctl daemon-reload >/dev/null 2>&1 || true
 
-        [ -z "${SERVER_CONF:-}" ] || rm -f -- "$SERVER_CONF"
-        rm -rf -- "$STATE_DIR"
+        if [ "${FRESH_INSTALL_CLAIMED:-0}" = "1" ] && [ -n "${SERVER_CONF:-}" ]; then
+            rm -f -- "$SERVER_CONF"
+        fi
+        if [ "${FRESH_STATE_CREATED:-0}" = "1" ]; then
+            rm -rf -- "$STATE_DIR"
+        fi
 
-        if [ -f /etc/sysctl.d/99-wg-vpn.conf ] && grep -qx '# Managed by wg-vpn' /etc/sysctl.d/99-wg-vpn.conf; then
-            rm -f /etc/sysctl.d/99-wg-vpn.conf
+        if declare -F sysctl_file_owned >/dev/null 2>&1 && sysctl_file_owned; then
+            rm -f "$SYSCTL_FILE"
         fi
 
         if [ -n "${PREVIOUS_IPV4_FORWARD:-}" ]; then
@@ -39,6 +55,11 @@ cleanup_on_exit() {
         fi
         if [ -n "${PREVIOUS_IPV6_FORWARD:-}" ]; then
             sysctl -w "net.ipv6.conf.all.forwarding=$PREVIOUS_IPV6_FORWARD" >/dev/null 2>&1 || true
+        fi
+
+        if [ "${FRESH_MANAGEMENT_INSTALLED:-0}" = "1" ]; then
+            rm -f "$INSTALL_BIN"
+            rm -rf "$INSTALL_LIB"
         fi
     fi
 
@@ -93,6 +114,32 @@ yesno() {
     esac
 }
 command_exists() { command -v "$1" >/dev/null 2>&1; }
+
+resolve_repo_source() {
+    if [ -n "$REPO_RAW_OVERRIDE" ]; then
+        REPO_RAW="$REPO_RAW_OVERRIDE"
+        return 0
+    fi
+
+    if [ -z "$REPO_COMMIT" ]; then
+        REPO_COMMIT="$(
+            curl -fsSL --max-time 10 https://api.github.com/repos/marl-exe/wg-vpn/commits/main |
+                sed -n 's/^[[:space:]]*"sha":[[:space:]]*"\([0-9a-f]\{40\}\)".*/\1/p' |
+                head -1
+        )"
+    fi
+
+    [[ "$REPO_COMMIT" =~ ^[0-9a-f]{40}$ ]] || die "Could not resolve a single Git commit for installation."
+    REPO_RAW="https://raw.githubusercontent.com/marl-exe/wg-vpn/$REPO_COMMIT"
+}
+
+acquire_installer_lock() {
+    command_exists flock || die "flock is required."
+    mkdir -p "$(dirname "$LOCK_FILE")"
+    exec 9>"$LOCK_FILE"
+    flock -n 9 || die "Another wg-vpn install/update/CLI operation is already running."
+    export WGVPN_LOCK_HELD=1
+}
 
 is_nonpublic_ipv4() {
     local ip="$1"
@@ -171,24 +218,24 @@ detect_endpoint() {
 
 stage_management_files() {
     local temp="$1" file
-    mkdir -p "$temp/lib" "$temp/bin"
+    mkdir -p "$temp/lib" "$temp/bin" || return 1
 
     for file in common.sh config.sh networking.sh firewall.sh clients.sh mtu.sh backup.sh; do
-        curl -fsSL "$REPO_RAW/lib/$file" -o "$temp/lib/$file"
-        bash -n "$temp/lib/$file"
+        curl -fsSL "$REPO_RAW/lib/$file" -o "$temp/lib/$file" || return 1
+        bash -n "$temp/lib/$file" || return 1
     done
 
-    curl -fsSL "$REPO_RAW/bin/wg-vpn" -o "$temp/bin/wg-vpn"
-    bash -n "$temp/bin/wg-vpn"
+    curl -fsSL "$REPO_RAW/bin/wg-vpn" -o "$temp/bin/wg-vpn" || return 1
+    bash -n "$temp/bin/wg-vpn" || return 1
 }
 
 install_staged_management_files() {
     local temp="$1" file
-    mkdir -p "$INSTALL_LIB"
+    mkdir -p "$INSTALL_LIB" || return 1
     for file in common.sh config.sh networking.sh firewall.sh clients.sh mtu.sh backup.sh; do
-        install -m 755 "$temp/lib/$file" "$INSTALL_LIB/$file"
+        install -m 755 "$temp/lib/$file" "$INSTALL_LIB/$file" || return 1
     done
-    install -m 755 "$temp/bin/wg-vpn" "$INSTALL_BIN"
+    install -m 755 "$temp/bin/wg-vpn" "$INSTALL_BIN" || return 1
 }
 
 validate_selected_resources() {
@@ -205,7 +252,7 @@ validate_selected_resources() {
     valid_port "$WG_PORT" || die "Invalid UDP port."
     ! udp_port_in_use "$WG_PORT" || die "UDP port $WG_PORT is already in use."
 
-    [ -n "$ENDPOINT_HOST" ] || die "A public IP or DNS endpoint is required."
+    valid_endpoint_host "$ENDPOINT_HOST" || die "Endpoint must be a valid IPv4 address, DNS hostname, or bracketed IPv6 address."
     [ -z "${FORCED_MTU:-}" ] || valid_mtu "$FORCED_MTU" || die "MTU must be between 1280 and 9000."
 }
 
@@ -219,26 +266,71 @@ case "$ID" in
     *) die "V1 supports Ubuntu and Debian only. Detected: $ID" ;;
 esac
 
+if [ ! -f "$STATE_DIR/config.env" ]; then
+    for path in "$STATE_DIR" "$INSTALL_LIB" "$INSTALL_BIN" "$SERVICE_FILE" "$SYSCTL_FILE"; do
+        if [ -e "$path" ] || [ -L "$path" ]; then
+            die "Found pre-existing wg-vpn path without a valid installation: $path. Refusing to claim or delete it automatically."
+        fi
+    done
+fi
+
 if [ -f "$STATE_DIR/config.env" ]; then
     echo "wg-vpn existing installation detected."
     echo "Updating CLI and management modules only..."
     echo
 
+    command_exists curl || {
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl ca-certificates
+    }
     command_exists flock || {
         apt-get update
         DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends util-linux
     }
 
+    acquire_installer_lock
+    resolve_repo_source
+
+    for file in common.sh config.sh networking.sh firewall.sh clients.sh mtu.sh backup.sh; do
+        [ -f "$INSTALL_LIB/$file" ] || die "Existing installation is missing $INSTALL_LIB/$file; refusing a non-rollbackable update."
+    done
+    [ -f "$INSTALL_BIN" ] || die "Existing installation is missing $INSTALL_BIN; refusing a non-rollbackable update."
+
     INSTALL_TEMP="$(mktemp -d)"
-    stage_management_files "$INSTALL_TEMP"
-    install_staged_management_files "$INSTALL_TEMP"
+    UPDATE_BACKUP="$(mktemp -d)"
+    mkdir -p "$UPDATE_BACKUP/lib" "$UPDATE_BACKUP/bin"
+    cp -a "$INSTALL_LIB/." "$UPDATE_BACKUP/lib/"
+    cp -a "$INSTALL_BIN" "$UPDATE_BACKUP/bin/wg-vpn"
 
-    "$INSTALL_BIN" firewall-apply
+    stage_management_files "$INSTALL_TEMP" || die "Could not stage a consistent update."
+    if ! install_staged_management_files "$INSTALL_TEMP"; then
+        rm -rf "$INSTALL_LIB"
+        mkdir -p "$INSTALL_LIB"
+        cp -a "$UPDATE_BACKUP/lib/." "$INSTALL_LIB/"
+        cp -a "$UPDATE_BACKUP/bin/wg-vpn" "$INSTALL_BIN"
+        die "Update file installation failed; previous management files were restored."
+    fi
 
-    echo "wg-vpn management files updated."
+    # shellcheck disable=SC1091
+    source "$INSTALL_LIB/common.sh"
+    # shellcheck disable=SC1091
+    source "$INSTALL_LIB/networking.sh"
+    # shellcheck disable=SC1091
+    source "$INSTALL_LIB/firewall.sh"
+
+    if ! try_load_config || ! (firewall_apply); then
+        rm -rf "$INSTALL_LIB"
+        mkdir -p "$INSTALL_LIB"
+        cp -a "$UPDATE_BACKUP/lib/." "$INSTALL_LIB/"
+        cp -a "$UPDATE_BACKUP/bin/wg-vpn" "$INSTALL_BIN"
+        die "Updated code failed validation/firewall migration; previous management files were restored."
+    fi
+
+    echo "wg-vpn management files updated from commit $REPO_COMMIT."
     echo "Existing server keys, clients, WireGuard configuration, VPN addresses, and unrelated firewall objects were not replaced."
     echo
     "$INSTALL_BIN" status
+    INSTALL_COMMITTED=1
     exit 0
 fi
 
@@ -269,12 +361,21 @@ echo
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends wireguard wireguard-tools qrencode iptables iproute2 ca-certificates curl util-linux
 
-mkdir -p "$WG_ROOT"
-chmod 700 "$WG_ROOT"
+acquire_installer_lock
+resolve_repo_source
+
+if [ -e "$WG_ROOT" ] || [ -L "$WG_ROOT" ]; then
+    [ -d "$WG_ROOT" ] && [ ! -L "$WG_ROOT" ] || die "Unsafe /etc/wireguard path."
+    [ "$(stat -c '%u' "$WG_ROOT" 2>/dev/null || echo -1)" = "0" ] || die "/etc/wireguard must be owned by root."
+else
+    mkdir -p "$WG_ROOT"
+    chmod 700 "$WG_ROOT"
+fi
 
 INSTALL_TEMP="$(mktemp -d)"
-stage_management_files "$INSTALL_TEMP"
-install_staged_management_files "$INSTALL_TEMP"
+stage_management_files "$INSTALL_TEMP" || die "Could not stage management files from commit $REPO_COMMIT."
+install_staged_management_files "$INSTALL_TEMP" || die "Could not install management files."
+FRESH_MANAGEMENT_INSTALLED=1
 
 source "$INSTALL_LIB/common.sh"
 source "$INSTALL_LIB/config.sh"
@@ -440,6 +541,7 @@ echo
 
 validate_selected_resources
 safe_mkdirs
+FRESH_STATE_CREATED=1
 
 SERVER_CONF="$WG_ROOT/${WG_INTERFACE}.conf"
 if ! (set -o noclobber; : > "$SERVER_CONF") 2>/dev/null; then
@@ -474,24 +576,10 @@ chmod 600 "$SERVER_CONF"
 
 enable_forwarding
 
-cat > /etc/systemd/system/wg-vpn-firewall.service <<EOF
-[Unit]
-Description=wg-vpn firewall and NAT rules
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/wg-vpn firewall-apply
-ExecStop=/usr/local/bin/wg-vpn firewall-remove
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
+install_firewall_service_unit
 systemctl daemon-reload
 systemctl enable --now "wg-quick@$WG_INTERFACE"
+firewall_apply
 systemctl enable --now wg-vpn-firewall.service
 INSTALL_COMMITTED=1
 
