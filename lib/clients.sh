@@ -74,7 +74,7 @@ sync_interface() {
 add_client() {
     local name="$1" route_mode="${2:-}" custom_routes="${3:-}" dns="${4:-}"
     local keepalive="${5:-25}" mtu="${6:-${FORCED_MTU:-}}"
-    local meta conf ipv4 ipv6="" private public psk route_answer allowed address
+    local meta conf ipv4 ipv6="" private public psk allowed address
 
     valid_client_name "$name" || die "Client names may contain letters, numbers, _ and - (max 32 chars)."
     meta="$(client_meta_file "$name")"
@@ -86,12 +86,17 @@ add_client() {
     fi
 
     if [ -z "$route_mode" ]; then
-        route_answer="$(prompt_routing "$DEFAULT_ROUTE_MODE")" || die "Invalid routing selection."
-        route_mode="${route_answer%%|*}"
-        custom_routes="${route_answer#*|}"
+        prompt_routing "$DEFAULT_ROUTE_MODE" || die "Invalid routing selection."
+        route_mode="$ROUTE_MODE_RESULT"
+        custom_routes="$ROUTE_CUSTOM_RESULT"
     fi
+
     allowed="$(routing_allowed_ips "$route_mode" "$custom_routes" "$IPV6_ENABLED")" || die "Invalid routing mode."
-    [ -n "$dns" ] || dns="$(prompt_dns "$DEFAULT_DNS")"
+
+    if [ -z "$dns" ]; then
+        prompt_dns
+        dns="$DNS_RESULT"
+    fi
 
     private="$(wg genkey)"
     public="$(printf '%s' "$private" | wg pubkey)"
