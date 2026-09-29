@@ -3,6 +3,32 @@
 client_meta_file() { echo "$WGVPN_CLIENT_META_DIR/$1.env"; }
 client_config_file() { echo "$WGVPN_CLIENT_CONFIG_DIR/$1.conf"; }
 
+config_private_key() {
+    local file="$1"
+    sed -n 's/^[[:space:]]*PrivateKey[[:space:]]*=[[:space:]]*//p' "$file" 2>/dev/null |
+        head -1 | tr -d '[:space:]'
+}
+
+server_config_owned() {
+    local file="$WG_ROOT/${WG_INTERFACE}.conf" private derived
+    [ -f "$file" ] && [ ! -L "$file" ] || return 1
+    private="$(config_private_key "$file")"
+    valid_wg_key "$private" || return 1
+    derived="$(printf '%s' "$private" | wg pubkey 2>/dev/null)" || return 1
+    [ "$derived" = "$SERVER_PUBLIC_KEY" ]
+}
+
+client_config_owned() {
+    local name="$1" file private derived
+    file="$(client_config_file "$name")"
+    [ -e "$file" ] || return 2
+    [ -f "$file" ] && [ ! -L "$file" ] || return 1
+    private="$(config_private_key "$file")"
+    valid_wg_key "$private" || return 1
+    derived="$(printf '%s' "$private" | wg pubkey 2>/dev/null)" || return 1
+    [ "$derived" = "$CLIENT_PUBLIC_KEY" ]
+}
+
 load_client() {
     local name="$1" file
     file="$(client_meta_file "$name")"
@@ -107,6 +133,7 @@ add_client() {
     [ ! -e "$meta" ] || die "Client '$name' already exists."
     [ ! -e "$conf" ] || die "Refusing to overwrite existing client configuration: $conf"
     [ -f "$server_conf" ] || die "Server configuration is missing: $server_conf"
+    server_config_owned || die "Refusing to modify a server configuration whose key does not match wg-vpn metadata."
 
     ipv4="$(next_client_ipv4)" || die "VPN IPv4 subnet is full."
     if [ "$IPV6_ENABLED" = "1" ]; then
@@ -139,6 +166,7 @@ add_client() {
     cp -a "$server_conf" "$server_backup"
 
     {
+        echo "# Managed by wg-vpn"
         echo "[Interface]"
         echo "PrivateKey = $private"
         address="$ipv4/32"
@@ -205,6 +233,7 @@ revoke_client() {
     load_client "$name"
     meta="$(client_meta_file "$name")"
     server_conf="$WG_ROOT/${WG_INTERFACE}.conf"
+    server_config_owned || die "Refusing to modify a server configuration whose key does not match wg-vpn metadata."
 
     if [ "$CLIENT_STATUS" = "revoked" ]; then
         info "Client '$name' is already revoked."
@@ -257,7 +286,11 @@ remove_client() {
     [ "$CLIENT_STATUS" = "revoked" ] || revoke_client "$name"
     conf="$(client_config_file "$name")"
     meta="$(client_meta_file "$name")"
-    rm -f -- "$conf" "$meta"
+    if [ -e "$conf" ] || [ -L "$conf" ]; then
+        client_config_owned "$name" || die "Refusing to delete client config whose key does not match wg-vpn metadata: $conf"
+        rm -f -- "$conf"
+    fi
+    rm -f -- "$meta"
     info "Client '$name' removed."
 }
 
