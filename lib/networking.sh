@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 
+WGVPN_SYSCTL_FILE="/etc/sysctl.d/99-wg-vpn.conf"
+WGVPN_FIREWALL_SERVICE_FILE="/etc/systemd/system/wg-vpn-firewall.service"
+
 detect_public_interface() {
     ip -4 route get 1.1.1.1 2>/dev/null | awk '{
         for (i=1; i<=NF; i++) if ($i=="dev") {print $(i+1); exit}
@@ -66,18 +69,66 @@ wireguard_interface_probe() {
     return 1
 }
 
-record_forwarding_state() {
-    write_env_file "$WGVPN_STATE"         "PREVIOUS_IPV4_FORWARD=$(sysctl -n net.ipv4.ip_forward 2>/dev/null || echo 0)"         "PREVIOUS_IPV6_FORWARD=$(sysctl -n net.ipv6.conf.all.forwarding 2>/dev/null || echo 0)"
+render_forwarding_sysctl() {
+    echo "# Managed by wg-vpn"
+    echo "net.ipv4.ip_forward=1"
+    if [ "${IPV6_ENABLED:-0}" = "1" ]; then
+        echo "net.ipv6.conf.all.forwarding=1"
+    fi
+}
+
+sysctl_file_owned() {
+    [ -f "$WGVPN_SYSCTL_FILE" ] && [ ! -L "$WGVPN_SYSCTL_FILE" ] || return 1
+    cmp -s "$WGVPN_SYSCTL_FILE" <(render_forwarding_sysctl)
+}
+
+render_firewall_service_unit() {
+    cat <<'EOF'
+[Unit]
+Description=wg-vpn firewall and NAT rules
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/wg-vpn firewall-apply
+ExecStop=/usr/local/bin/wg-vpn firewall-remove
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+firewall_service_owned() {
+    [ -f "$WGVPN_FIREWALL_SERVICE_FILE" ] && [ ! -L "$WGVPN_FIREWALL_SERVICE_FILE" ] || return 1
+    cmp -s "$WGVPN_FIREWALL_SERVICE_FILE" <(render_firewall_service_unit)
+}
+
+install_firewall_service_unit() {
+    local tmp
+    if [ -e "$WGVPN_FIREWALL_SERVICE_FILE" ] || [ -L "$WGVPN_FIREWALL_SERVICE_FILE" ]; then
+        firewall_service_owned || die "Refusing to overwrite unowned systemd unit: $WGVPN_FIREWALL_SERVICE_FILE"
+        return 0
+    fi
+
+    tmp="$(mktemp /etc/systemd/system/.wg-vpn-firewall.service.XXXXXX)"
+    render_firewall_service_unit > "$tmp"
+    chmod 644 "$tmp"
+    mv -f "$tmp" "$WGVPN_FIREWALL_SERVICE_FILE"
 }
 
 enable_forwarding() {
-    cat > /etc/sysctl.d/99-wg-vpn.conf <<EOF
-# Managed by wg-vpn
-net.ipv4.ip_forward=1
-EOF
-    if [ "${IPV6_ENABLED:-0}" = "1" ]; then
-        echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.d/99-wg-vpn.conf
+    local tmp
+    if [ -e "$WGVPN_SYSCTL_FILE" ] || [ -L "$WGVPN_SYSCTL_FILE" ]; then
+        sysctl_file_owned || die "Refusing to overwrite unowned sysctl file: $WGVPN_SYSCTL_FILE"
+    else
+        tmp="$(mktemp /etc/sysctl.d/.99-wg-vpn.conf.XXXXXX)"
+        render_forwarding_sysctl > "$tmp"
+        chmod 644 "$tmp"
+        mv -f "$tmp" "$WGVPN_SYSCTL_FILE"
     fi
+
     sysctl -w net.ipv4.ip_forward=1 >/dev/null
     if [ "${IPV6_ENABLED:-0}" = "1" ]; then
         sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null
@@ -85,7 +136,14 @@ EOF
 }
 
 restore_forwarding() {
-    rm -f /etc/sysctl.d/99-wg-vpn.conf
+    if [ -e "$WGVPN_SYSCTL_FILE" ] || [ -L "$WGVPN_SYSCTL_FILE" ]; then
+        if sysctl_file_owned; then
+            rm -f "$WGVPN_SYSCTL_FILE"
+        else
+            warn "Refusing to remove unowned sysctl file: $WGVPN_SYSCTL_FILE"
+        fi
+    fi
+
     sysctl --system >/dev/null 2>&1 || true
     if [ "${PREVIOUS_IPV4_FORWARD:-0}" = "1" ]; then
         sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
