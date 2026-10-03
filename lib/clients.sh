@@ -189,7 +189,7 @@ add_client() {
         echo "[Peer]"
         echo "PublicKey = $SERVER_PUBLIC_KEY"
         echo "PresharedKey = $psk"
-        echo "Endpoint = $ENDPOINT_HOST:$WG_PORT"
+        echo "Endpoint = $ENDPOINT_HOST:$ENDPOINT_PORT"
         echo "AllowedIPs = $allowed"
         [ "$keepalive" = "0" ] || echo "PersistentKeepalive = $keepalive"
     } > "$client_tmp"
