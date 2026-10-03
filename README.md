@@ -13,6 +13,8 @@ The current V1 has been successfully tested on real Ubuntu VPSes running Ubuntu 
 - Safe coexistence with Docker, websites, bots, game servers, RDP, and monitoring
 - Dedicated VPN subnet (default `10.66.66.0/24`)
 - Automatic public-interface and public-endpoint detection
+- NAT/shared-IPv4 VPS detection, including CGNAT source addresses
+- Separate public endpoint and internal WireGuard UDP ports for provider port forwarding
 - Automatic WireGuard interface, non-conflicting VPN subnet, and UDP port selection
 - Full tunnel, split tunnel, and custom client routes
 - Optional IPv6
@@ -60,13 +62,16 @@ Automatic mode detects or selects technical settings that most users should not 
 - WireGuard UDP port
 - Automatic MTU
 
+If the VPS source address is private or CGNAT, automatic mode identifies it as a NAT/port-forwarded environment and asks for one public UDP port assigned by the VPS provider. The internal WireGuard listen port defaults to that same value but can be different when the provider maps an external port to another internal port.
+
 Manual / Advanced mode lets you override:
 
 - Public network interface
 - Public IP or DNS endpoint
+- Public endpoint UDP port
+- Internal WireGuard UDP port
 - WireGuard interface name
 - VPN subnet
-- UDP port
 - MTU
 
 The installer also reports the virtualization environment (for example KVM, LXC, OpenVZ, or bare metal), reports whether `/dev/net/tun` is present, and performs a real temporary WireGuard-interface creation test. The WireGuard-interface test is the compatibility check that matters for native Linux WireGuard; TUN/TAP availability is informational.
@@ -148,6 +153,32 @@ The endpoint shown by the local CLI is the most recently observed WireGuard peer
 
 WireGuard does not expose a definitive online/offline session state, so `wg-vpn` intentionally avoids claiming that a client is currently online. The README uses placeholders and does not publish real deployment addresses or keys.
 
+## NAT / shared IPv4 VPSes
+
+`wg-vpn` separates the public client-facing endpoint port from the UDP port WireGuard listens on locally:
+
+```text
+WG_PORT=51820
+ENDPOINT_PORT=32451
+```
+
+The server continues to listen and firewall locally on `WG_PORT`, while generated client configurations use:
+
+```ini
+Endpoint = <public-ip-or-hostname>:32451
+```
+
+This supports both common provider mappings:
+
+```text
+public :32451 -> private :32451
+public :32451 -> private :51820
+```
+
+For NAT VPS plans that allocate a small pool of random forwarded ports, only one UDP-capable forwarded port is required. The installer does not attempt to guess provider-assigned ports; the user enters one of the ports allocated by the provider.
+
+Existing configurations created before `ENDPOINT_PORT` was introduced remain compatible. If the setting is absent, `wg-vpn` treats the public endpoint port as the existing `WG_PORT`.
+
 ## Routing modes
 
 During installation and client creation:
@@ -212,7 +243,7 @@ The installer, updater, uninstall path, and mutating CLI operations use the same
 
 ## Testing status
 
-The current `0.3.x` line has completed real-world runtime testing on multiple Ubuntu VPSes running Ubuntu 24.04.4 LTS (Noble Numbat) and Ubuntu 26.04.1 LTS (Resolute Raccoon). Verified behavior includes:
+The current `0.4.x` line builds on the runtime-tested `0.3.x` networking path and has completed real-world runtime testing on multiple Ubuntu VPSes running Ubuntu 24.04.4 LTS (Noble Numbat) and Ubuntu 26.04.1 LTS (Resolute Raccoon). Verified behavior includes:
 
 - Clean native WireGuard installation
 - First-client creation and QR generation
@@ -229,7 +260,7 @@ The current `0.3.x` line has completed real-world runtime testing on multiple Ub
 
 The repository also passes Bash syntax checks, ShellCheck, and safety regression tests covering strict metadata parsing, hostile/duplicate archive entries, IPv4/IPv6 CIDR validation, DNS/endpoint validation, firewall-flush guards, whole-`/etc/wireguard` deletion guards, lock-file preservation, installer prompt regressions, first-client default inheritance, and staged WireGuard validation behavior.
 
-Fresh installation and normal client creation are now runtime-validated. Broader runtime testing is still desirable for less common paths such as IPv6 deployments, backup/restore under failure conditions, rollback verification, unusual firewall layouts, containerized VPS environments, and other edge-case host configurations.
+Fresh installation and normal client creation on directly addressed VPSes are runtime-validated. NAT/shared-IPv4 endpoint-port support is covered by repository regression tests but still needs a real NAT VPS runtime test. Broader runtime testing is also desirable for IPv6 deployments, backup/restore under failure conditions, rollback verification, unusual firewall layouts, containerized VPS environments, and other edge-case host configurations.
 
 ## License
 
