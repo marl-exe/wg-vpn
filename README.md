@@ -62,7 +62,7 @@ Automatic mode detects or selects technical settings that most users should not 
 - WireGuard UDP port
 - Automatic MTU
 
-If the VPS source address is private or CGNAT, automatic mode identifies it as a NAT/port-forwarded environment and asks for one public UDP port assigned by the VPS provider. The internal WireGuard listen port defaults to that same value but can be different when the provider maps an external port to another internal port.
+If the VPS source address is private or CGNAT, automatic mode identifies it as a NAT/port-forwarded environment and asks for one public UDP port assigned by the VPS provider. Automatic mode uses that same port for the local WireGuard listener, matching the common 1:1 forwarding model. Providers that map a public port to a different internal port are supported through Manual / Advanced mode.
 
 Manual / Advanced mode lets you override:
 
@@ -168,10 +168,15 @@ The server continues to listen and firewall locally on `WG_PORT`, while generate
 Endpoint = <public-ip-or-hostname>:32451
 ```
 
-This supports both common provider mappings:
+Automatic mode is optimized for the common 1:1 provider mapping:
 
 ```text
 public :32451 -> private :32451
+```
+
+If a provider instead maps a public port to a different internal port, Manual / Advanced mode supports that configuration:
+
+```text
 public :32451 -> private :51820
 ```
 
