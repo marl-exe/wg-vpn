@@ -16,7 +16,7 @@ source "$LIB_DIR/clients.sh"
 source "$LIB_DIR/mtu.sh"
 source "$LIB_DIR/backup.sh"
 
-VERSION="0.3.0"
+VERSION="0.4.0"
 
 usage() {
     cat <<'EOF'
@@ -129,7 +129,7 @@ status_cmd() {
     echo "Interface:        $WG_INTERFACE"
     echo "Service:          $(systemctl is-active "wg-quick@$WG_INTERFACE" 2>/dev/null || true)"
     echo "Listen port:      $WG_PORT/UDP"
-    echo "Endpoint:         $ENDPOINT_HOST:$WG_PORT"
+    echo "Endpoint:         $ENDPOINT_HOST:$ENDPOINT_PORT"
     echo "VPN subnet:       $WG_IPV4_SUBNET"
     echo "Public interface: $PUBLIC_INTERFACE"
     echo "Firewall backend: $(detect_firewall_backend)"
