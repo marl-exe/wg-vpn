@@ -182,6 +182,11 @@ grep -Fq 'Endpoint = $ENDPOINT_HOST:$ENDPOINT_PORT' lib/clients.sh ||
     fail "client configs do not use the public endpoint port"
 grep -Fq 'ask "Public UDP port" ""' install.sh ||
     fail "automatic NAT flow does not request a provider-forwarded public UDP port"
+grep -Fq 'WG_PORT="$ENDPOINT_PORT"' install.sh ||
+    fail "automatic NAT flow does not use the forwarded public port as the local WireGuard port"
+if grep -Fq 'ask "Internal WireGuard UDP port" "$ENDPOINT_PORT"' install.sh; then
+    fail "automatic NAT flow still asks for a redundant internal WireGuard port"
+fi
 grep -Fq '"ENDPOINT_PORT=$ENDPOINT_PORT"' install.sh ||
     fail "fresh installs do not persist the public endpoint port"
 
