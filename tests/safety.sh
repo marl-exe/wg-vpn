@@ -64,8 +64,22 @@ DEFAULT_CUSTOM_ROUTES=
 FORCED_MTU=
 EOF
 chmod 600 "$tmp/config.env"
-parse_env_file "$tmp/config.env" config || fail "valid config metadata rejected"
-validate_config_values || fail "valid config values rejected"
+parse_env_file "$tmp/config.env" config || fail "valid legacy config metadata rejected"
+validate_config_values || fail "valid legacy config values rejected"
+[ "$ENDPOINT_PORT" = "$WG_PORT" ] || fail "legacy config did not default ENDPOINT_PORT to WG_PORT"
+
+cp "$tmp/config.env" "$tmp/nat.env"
+echo 'ENDPOINT_PORT=32451' >> "$tmp/nat.env"
+chmod 600 "$tmp/nat.env"
+parse_env_file "$tmp/nat.env" config || fail "NAT endpoint-port config rejected"
+validate_config_values || fail "valid NAT endpoint-port config values rejected"
+[ "$ENDPOINT_PORT" = "32451" ] || fail "NAT endpoint port was not preserved"
+
+cp "$tmp/config.env" "$tmp/bad-endpoint-port.env"
+echo 'ENDPOINT_PORT=70000' >> "$tmp/bad-endpoint-port.env"
+chmod 600 "$tmp/bad-endpoint-port.env"
+parse_env_file "$tmp/bad-endpoint-port.env" config || fail "invalid endpoint port should parse as inert metadata before semantic validation"
+! validate_config_values || fail "invalid endpoint port passed semantic validation"
 
 cp "$tmp/config.env" "$tmp/unknown.env"
 echo 'WGVPN_CLIENT_META_DIR=/tmp/owned-by-attacker' >> "$tmp/unknown.env"
@@ -162,5 +176,13 @@ grep -Fq 'first_client_args=("$client_name" "--dns" "$DEFAULT_DNS")' install.sh 
     fail "first installer-created client does not inherit selected DNS"
 grep -Fq 'first_client_args+=("--full")' install.sh ||
     fail "first installer-created client does not inherit selected routing"
+grep -Fq 'ENDPOINT_PORT="${ENDPOINT_PORT:-$WG_PORT}"' lib/common.sh ||
+    fail "legacy configs do not fall back from ENDPOINT_PORT to WG_PORT"
+grep -Fq 'Endpoint = $ENDPOINT_HOST:$ENDPOINT_PORT' lib/clients.sh ||
+    fail "client configs do not use the public endpoint port"
+grep -Fq 'ask "Public UDP port" ""' install.sh ||
+    fail "automatic NAT flow does not request a provider-forwarded public UDP port"
+grep -Fq '"ENDPOINT_PORT=$ENDPOINT_PORT"' install.sh ||
+    fail "fresh installs do not persist the public endpoint port"
 
 echo "Safety regression checks passed."
