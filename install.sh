@@ -249,8 +249,9 @@ validate_selected_resources() {
     valid_ipv4_24_cidr "$WG_IPV4_SUBNET" || die "V1 currently requires a valid IPv4 /24 subnet."
     ! subnet_conflicts "$WG_IPV4_SUBNET" || die "$WG_IPV4_SUBNET already appears in the routing table."
 
-    valid_port "$WG_PORT" || die "Invalid UDP port."
+    valid_port "$WG_PORT" || die "Invalid WireGuard UDP port."
     ! udp_port_in_use "$WG_PORT" || die "UDP port $WG_PORT is already in use."
+    valid_port "$ENDPOINT_PORT" || die "Invalid public endpoint UDP port."
 
     valid_endpoint_host "$ENDPOINT_HOST" || die "Endpoint must be a valid IPv4 address, DNS hostname, or bracketed IPv6 address."
     [ -z "${FORCED_MTU:-}" ] || valid_mtu "$FORCED_MTU" || die "MTU must be between 1280 and 9000."
@@ -424,7 +425,14 @@ DETECTED_PUBLIC_INTERFACE="$(detect_public_interface || true)"
 DETECTED_WG_INTERFACE="$(choose_wg_interface || true)"
 DETECTED_IPV4_SUBNET="$(choose_ipv4_subnet || true)"
 DETECTED_PORT="$(choose_udp_port || true)"
+DETECTED_SOURCE_IPV4="$(detect_source_ipv4 || true)"
 DETECTED_ENDPOINT="$(detect_endpoint || true)"
+NAT_DETECTED=0
+NETWORK_TYPE="public IPv4"
+if [ -n "$DETECTED_SOURCE_IPV4" ] && is_nonpublic_ipv4 "$DETECTED_SOURCE_IPV4"; then
+    NAT_DETECTED=1
+    NETWORK_TYPE="NAT / port-forwarded"
+fi
 
 if [ "$SETUP_MODE" = "manual" ]; then
     echo "Manual / Advanced configuration"
@@ -455,6 +463,10 @@ if [ "$SETUP_MODE" = "manual" ]; then
     ask "Public IP or DNS name" "$DETECTED_ENDPOINT"
     ENDPOINT_HOST="$INSTALL_PROMPT_RESULT"
     [ -n "$ENDPOINT_HOST" ] || die "A public IP or DNS endpoint is required."
+
+    ask "Public endpoint UDP port" "$WG_PORT"
+    ENDPOINT_PORT="$INSTALL_PROMPT_RESULT"
+    valid_port "$ENDPOINT_PORT" || die "Invalid public endpoint UDP port."
 
     ask "MTU (automatic or number)" "automatic"
     mtu_input="$INSTALL_PROMPT_RESULT"
@@ -502,6 +514,26 @@ else
     fi
     [ -n "$ENDPOINT_HOST" ] || die "A public IP or DNS endpoint is required."
 
+    if [ "$NAT_DETECTED" = "1" ]; then
+        echo
+        echo "NAT / shared IPv4 environment detected."
+        echo
+        echo "  Local IPv4:       $DETECTED_SOURCE_IPV4"
+        echo "  Public endpoint:  $ENDPOINT_HOST"
+        echo
+        echo "Enter one UDP port assigned or forwarded by your VPS provider."
+        ask "Public UDP port" ""
+        ENDPOINT_PORT="$INSTALL_PROMPT_RESULT"
+        valid_port "$ENDPOINT_PORT" || die "Invalid public endpoint UDP port."
+
+        ask "Internal WireGuard UDP port" "$ENDPOINT_PORT"
+        WG_PORT="$INSTALL_PROMPT_RESULT"
+        valid_port "$WG_PORT" || die "Invalid WireGuard UDP port."
+        ! udp_port_in_use "$WG_PORT" || die "UDP port $WG_PORT is already in use."
+    else
+        ENDPOINT_PORT="$WG_PORT"
+    fi
+
     FORCED_MTU=""
 fi
 
@@ -509,11 +541,13 @@ validate_selected_resources
 
 WG_SERVER_IPV4="$(ipv4_prefix_from_cidr "$WG_IPV4_SUBNET").1"
 
+echo "  Network type:        $NETWORK_TYPE"
 echo "  Public interface:    $PUBLIC_INTERFACE"
+[ -z "$DETECTED_SOURCE_IPV4" ] || echo "  Local IPv4:          $DETECTED_SOURCE_IPV4"
 echo "  WireGuard interface: $WG_INTERFACE"
 echo "  VPN subnet:          $WG_IPV4_SUBNET"
-echo "  WireGuard port:      $WG_PORT/UDP"
-echo "  Public endpoint:     $ENDPOINT_HOST"
+echo "  WireGuard listen:    $WG_PORT/UDP"
+echo "  Public endpoint:     $ENDPOINT_HOST:$ENDPOINT_PORT"
 echo "  MTU:                 ${FORCED_MTU:-automatic}"
 
 IPV6_ENABLED=0
@@ -541,8 +575,10 @@ echo "Configuration:"
 echo
 echo "  Setup mode:          $SETUP_MODE"
 echo "  Virtualization:      $VIRTUALIZATION"
+echo "  Network type:        $NETWORK_TYPE"
 echo "  Public interface:    $PUBLIC_INTERFACE"
-echo "  Public endpoint:     $ENDPOINT_HOST:$WG_PORT"
+echo "  Public endpoint:     $ENDPOINT_HOST:$ENDPOINT_PORT"
+echo "  WireGuard listen:    $WG_PORT/UDP"
 echo "  WireGuard interface: $WG_INTERFACE"
 echo "  VPN subnet:          $WG_IPV4_SUBNET"
 echo "  DNS:                 $DEFAULT_DNS"
@@ -574,7 +610,7 @@ write_env_file "$WGVPN_STATE"     "PREVIOUS_IPV4_FORWARD=$PREVIOUS_IPV4_FORWARD"
 SERVER_PRIVATE_KEY="$(wg genkey)"
 SERVER_PUBLIC_KEY="$(printf '%s' "$SERVER_PRIVATE_KEY" | wg pubkey)"
 
-write_env_file "$WGVPN_CONFIG"     "WG_INTERFACE=$WG_INTERFACE"     "WG_IPV4_SUBNET=$WG_IPV4_SUBNET"     "WG_SERVER_IPV4=$WG_SERVER_IPV4"     "WG_PORT=$WG_PORT"     "PUBLIC_INTERFACE=$PUBLIC_INTERFACE"     "ENDPOINT_HOST=$ENDPOINT_HOST"     "SERVER_PUBLIC_KEY=$SERVER_PUBLIC_KEY"     "IPV6_ENABLED=$IPV6_ENABLED"     "WG_IPV6_PREFIX=$WG_IPV6_PREFIX"     "WG_IPV6_SUBNET=$WG_IPV6_SUBNET"     "WG_SERVER_IPV6=$WG_SERVER_IPV6"     "DEFAULT_DNS=$DEFAULT_DNS"     "DEFAULT_ROUTE_MODE=$DEFAULT_ROUTE_MODE"     "DEFAULT_CUSTOM_ROUTES=$DEFAULT_CUSTOM_ROUTES"     "FORCED_MTU=$FORCED_MTU"
+write_env_file "$WGVPN_CONFIG"     "WG_INTERFACE=$WG_INTERFACE"     "WG_IPV4_SUBNET=$WG_IPV4_SUBNET"     "WG_SERVER_IPV4=$WG_SERVER_IPV4"     "WG_PORT=$WG_PORT"     "PUBLIC_INTERFACE=$PUBLIC_INTERFACE"     "ENDPOINT_HOST=$ENDPOINT_HOST"     "ENDPOINT_PORT=$ENDPOINT_PORT"     "SERVER_PUBLIC_KEY=$SERVER_PUBLIC_KEY"     "IPV6_ENABLED=$IPV6_ENABLED"     "WG_IPV6_PREFIX=$WG_IPV6_PREFIX"     "WG_IPV6_SUBNET=$WG_IPV6_SUBNET"     "WG_SERVER_IPV6=$WG_SERVER_IPV6"     "DEFAULT_DNS=$DEFAULT_DNS"     "DEFAULT_ROUTE_MODE=$DEFAULT_ROUTE_MODE"     "DEFAULT_CUSTOM_ROUTES=$DEFAULT_CUSTOM_ROUTES"     "FORCED_MTU=$FORCED_MTU"
 
 {
     echo "# Managed by wg-vpn"
@@ -604,7 +640,7 @@ echo
 echo "WireGuard server installed."
 echo "Interface: $WG_INTERFACE"
 echo "VPN subnet: $WG_IPV4_SUBNET"
-echo "Endpoint: $ENDPOINT_HOST:$WG_PORT"
+echo "Endpoint: $ENDPOINT_HOST:$ENDPOINT_PORT"
 echo "Firewall backend: $(detect_firewall_backend)"
 echo "MTU: ${FORCED_MTU:-automatic}"
 echo
