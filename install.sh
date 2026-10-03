@@ -526,9 +526,9 @@ else
         ENDPOINT_PORT="$INSTALL_PROMPT_RESULT"
         valid_port "$ENDPOINT_PORT" || die "Invalid public endpoint UDP port."
 
-        ask "Internal WireGuard UDP port" "$ENDPOINT_PORT"
-        WG_PORT="$INSTALL_PROMPT_RESULT"
-        valid_port "$WG_PORT" || die "Invalid WireGuard UDP port."
+        # Automatic NAT mode assumes the provider's forwarded port is 1:1.
+        # Manual / Advanced mode remains available for different external/internal mappings.
+        WG_PORT="$ENDPOINT_PORT"
         ! udp_port_in_use "$WG_PORT" || die "UDP port $WG_PORT is already in use."
     else
         ENDPOINT_PORT="$WG_PORT"
