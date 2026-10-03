@@ -4,7 +4,7 @@ Lightweight, low-latency WireGuard VPN installer and CLI manager for Ubuntu/Debi
 
 `wg-vpn` is designed for VPSes that already run other workloads. It installs native WireGuard, makes narrowly scoped networking changes, and provides a CLI manager without requiring Docker, Node.js, Python, a database, a Web UI, or an always-running management daemon.
 
-The current V1 has been successfully tested on real Ubuntu VPSes running Ubuntu 24.04.4 LTS (Noble Numbat) and Ubuntu 26.04.1 LTS (Resolute Raccoon), with mobile WireGuard clients. Testing has covered clean installation, first-client creation and QR generation, full-tunnel routing, live handshakes, bidirectional traffic transfer, client management, iptables-nft integration, automatic MTU behavior, and an older-install upgrade/uninstall/fresh-install cycle.
+The current V1 has been successfully tested on real Ubuntu VPSes running Ubuntu 24.04.4 LTS (Noble Numbat) and Ubuntu 26.04.1 LTS (Resolute Raccoon), including both directly addressed VPSes and a real NAT/shared-IPv4 VPS. Testing has covered clean installation, first-client creation and QR generation, full-tunnel routing, live handshakes, bidirectional traffic transfer, client management, iptables-nft integration, automatic MTU behavior, NAT endpoint-port handling, and an older-install upgrade/uninstall/fresh-install cycle.
 
 ## Design goals
 
@@ -177,6 +177,8 @@ public :32451 -> private :51820
 
 For NAT VPS plans that allocate a small pool of random forwarded ports, only one UDP-capable forwarded port is required. The installer does not attempt to guess provider-assigned ports; the user enters one of the ports allocated by the provider.
 
+This flow has been successfully runtime-tested on a real shared-IPv4 VPS with a private `192.168.x.x` source address and a provider-assigned block of 20 TCP/UDP ports using 1:1 public-to-private port forwarding. Automatic NAT detection identified the private source address, the selected provider port was used for both the public endpoint and local WireGuard listener, and a client completed a working WireGuard connection through the forwarded UDP port.
+
 Existing configurations created before `ENDPOINT_PORT` was introduced remain compatible. If the setting is absent, `wg-vpn` treats the public endpoint port as the existing `WG_PORT`.
 
 ## Routing modes
@@ -257,10 +259,13 @@ The current `0.4.x` line builds on the runtime-tested `0.3.x` networking path an
 - Staged WireGuard configuration validation under `/etc/wireguard`
 - Clean uninstall while preserving unrelated WireGuard configuration
 - Older-install → management upgrade → uninstall → fresh-install migration path
+- NAT/shared-IPv4 detection from a private `192.168.x.x` source address
+- Provider-assigned forwarded UDP port selection
+- Real 1:1 NAT port mapping with successful client connectivity
 
 The repository also passes Bash syntax checks, ShellCheck, and safety regression tests covering strict metadata parsing, hostile/duplicate archive entries, IPv4/IPv6 CIDR validation, DNS/endpoint validation, firewall-flush guards, whole-`/etc/wireguard` deletion guards, lock-file preservation, installer prompt regressions, first-client default inheritance, and staged WireGuard validation behavior.
 
-Fresh installation and normal client creation on directly addressed VPSes are runtime-validated. NAT/shared-IPv4 endpoint-port support is covered by repository regression tests but still needs a real NAT VPS runtime test. Broader runtime testing is also desirable for IPv6 deployments, backup/restore under failure conditions, rollback verification, unusual firewall layouts, containerized VPS environments, and other edge-case host configurations.
+Fresh installation and normal client creation are runtime-validated on both directly addressed VPSes and a real NAT/shared-IPv4 VPS using provider-forwarded UDP ports. NAT endpoint-port behavior is also covered by repository regression tests. Broader runtime testing is still desirable for non-1:1 NAT mappings where the public endpoint port differs from the internal WireGuard listen port, IPv6 deployments, backup/restore under failure conditions, rollback verification, unusual firewall layouts, containerized VPS environments, and other edge-case host configurations.
 
 ## License
 
