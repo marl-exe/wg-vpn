@@ -311,31 +311,37 @@ Command-line use is also supported:
 
 WireGuard for Windows applies special block-untunneled-traffic / kill-switch behavior when an interface has one peer and that peer contains a `/0` AllowedIP. The helper conservatively refuses any detected WireGuard `/0` route; it does not inspect peer configuration. A route-only bypass requires the equivalent pair of `/1` routes instead.
 
-For a full-tunnel IPv4 + IPv6 client, change:
+For the recommended Windows bypass setup, use IPv4 split-default routes.
 
-```ini
-AllowedIPs = 0.0.0.0/0, ::/0
-```
-
-to:
-
-```ini
-AllowedIPs = 0.0.0.0/1, 128.0.0.0/1, ::/1, 8000::/1
-```
-
-For an IPv4-only client, change:
+If the client currently has:
 
 ```ini
 AllowedIPs = 0.0.0.0/0
 ```
 
-to:
+change it to:
 
 ```ini
 AllowedIPs = 0.0.0.0/1, 128.0.0.0/1
 ```
 
-Those `/1` pairs still cover the complete IPv4/IPv6 address space, but they do not activate WireGuard for Windows' special `/0` kill-switch behavior. Windows can therefore select a more-specific bypass route.
+If the client currently has:
+
+```ini
+AllowedIPs = 0.0.0.0/0, ::/0
+```
+
+use the same IPv4-only bypass configuration:
+
+```ini
+AllowedIPs = 0.0.0.0/1, 128.0.0.0/1
+```
+
+This keeps IPv4 effectively full-tunnel while allowing more-specific IPv4 bypass routes. It also avoids sending IPv6 destinations through the VPN on clients that do not have a usable physical IPv6 gateway.
+
+Only add `::/1, 8000::/1` if the client has confirmed native IPv6 connectivity outside WireGuard and you intentionally want IPv6 full-tunnel routing. The bypass helper can create IPv6 host routes only when it detects a usable physical IPv6 gateway; otherwise IPv6 destinations would remain inside the VPN and can defeat the intended domain bypass.
+
+The IPv4 `/1` pair still covers the complete IPv4 address space, but it does not activate WireGuard for Windows' special `/0` kill-switch behavior. Windows can therefore select a more-specific bypass route.
 
 **Important:** replacing `/0` also removes that WireGuard-specific kill-switch behavior. If the tunnel goes down, Windows may use the normal network connection.
 
@@ -396,7 +402,7 @@ A hostname may resolve to multiple addresses, and those addresses can change. Ru
 
 The built-in ChatGPT/OpenAI preset is therefore intentionally conservative rather than automatically bypassing broad third-party infrastructure.
 
-Both presets contain the same exact hostnames: `chatgpt.com`, `openai.com`, `auth.openai.com`, `auth0.openai.com`, `chat.openai.com`, `desktop.chat.openai.com`, `setup.auth.openai.com`, and `cdn.openaimerge.com`. This is a starting list, not a guarantee that every login, upload, voice or static-content endpoint bypasses the VPN. Add individual hostnames as needed; no generic Cloudflare, Stripe, Intercom, WorkOS, Apple or Sentry domains are included.
+Both presets contain the same exact hostnames: `chatgpt.com`, `openai.com`, `auth.openai.com`, `auth0.openai.com`, `chat.openai.com`, `setup.auth.openai.com`, and `cdn.openaimerge.com`. This is a starting list, not a guarantee that every login, upload, voice or static-content endpoint bypasses the VPN. `desktop.chat.openai.com` is intentionally not included because it may have no usable DNS answer on browser-only clients; add it manually only if your environment needs it and it resolves. Add other individual hostnames as needed; no generic Cloudflare, Stripe, Intercom, WorkOS, Apple or Sentry domains are included.
 
 Refresh resolves all configured names before clearing existing routes. If a name has no usable addresses, it reports the failure and keeps existing routes; remove obsolete names or fix DNS and retry. A/AAAA resolution can still be partially successful: a missing family is not proof that the domain never uses it. Linux `getent` uses the host's NSS/address-family configuration and excludes IPv4-mapped IPv6 results. Neither helper monitors TTLs, changes DNS servers, or guarantees that browser/proxy DNS sees the same addresses. Close/reopen existing connections when testing routing changes. A successful route add is not an end-to-end application connectivity test.
 
