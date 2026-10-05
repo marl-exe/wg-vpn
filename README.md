@@ -425,13 +425,13 @@ pwsh -NoProfile -File tests\desktop\bypass.ps1
 
 ```bash
 bash -n desktop/wg-vpn-bypass.sh
-bash tests/bypass.sh
+bash tests/desktop/bypass.sh
 shellcheck --severity=error -e SC1090,SC1091 desktop/wg-vpn-bypass.sh tests/desktop/bypass*.sh
 # Linux test runner only: isolated namespace, no host route/firewall changes
-sudo bash tests/bypass-netns.sh
+sudo bash tests/desktop/bypass-netns.sh
 ```
 
-CI runs both Windows runtimes and Linux fixtures plus kernel IPv4/IPv6 route lookups using the same policy rules as `wg-quick`. The namespace test models its tunnel table with a dummy link; it does not test encrypted traffic or launch an actual WireGuard tunnel. See [the review report](BYPASS-REVIEW.md) for findings and verification scope.
+CI runs both Windows runtimes and Linux fixtures plus kernel IPv4/IPv6 route lookups using the same policy rules as `wg-quick`. The namespace test models its tunnel table with a dummy link; it does not test encrypted traffic or launch an actual WireGuard tunnel. See [the review report](desktop/BYPASS-REVIEW.md) for findings and verification scope.
 
 ### Mobile clients
 
