@@ -42,11 +42,13 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$VerbosePreference = "Continue"
 
-$StateDir   = Join-Path $env:ProgramData "WG-VPN-Bypass"
+$StateDir   = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) "WG-VPN-Bypass"
 $DomainsFile = Join-Path $StateDir "domains.txt"
 $RoutesFile  = Join-Path $StateDir "routes.json"
-$RouteMetric = 5
+$RouteMetric = Get-Random -Minimum 20000 -Maximum 60000
+$BootId = $null
 
 # Intentionally focused on core OpenAI/ChatGPT domains. Third-party shared
 # services (for example generic Cloudflare/Stripe/Intercom endpoints) are not
@@ -54,13 +56,12 @@ $RouteMetric = 5
 # sites sharing those addresses.
 $ChatGPTPreset = @(
     "chatgpt.com",
-    "*.chatgpt.com",
     "openai.com",
-    "*.openai.com",
-    "*.auth.openai.com",
-    "*.oaistatic.com",
-    "*.oaiusercontent.com",
-    "*.oaistatsig.com",
+    "auth.openai.com",
+    "auth0.openai.com",
+    "chat.openai.com",
+    "desktop.chat.openai.com",
+    "setup.auth.openai.com",
     "cdn.openaimerge.com"
 )
 
@@ -70,20 +71,20 @@ function Test-IsAdministrator {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Get-ElevationCode([string]$ScriptPath, [string]$RequestedCommand, [string]$RequestedValue) {
+    # Encode data, never interpolate caller input as PowerShell source.
+    $payload = @{ Path = $ScriptPath; Command = $RequestedCommand; Value = $RequestedValue } | ConvertTo-Json -Compress
+    $data = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($payload))
+    $code = '$p = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(''' + $data + ''')) | ConvertFrom-Json; & $p.Path -Command $p.Command -Value $p.Value'
+    return [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($code))
+}
+
 function Start-Elevated {
-    $args = @(
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-File", ('"{0}"' -f $PSCommandPath),
-        "-Command", ('"{0}"' -f $Command)
-    )
-
-    if (-not [string]::IsNullOrWhiteSpace($Value)) {
-        $args += @("-Value", ('"{0}"' -f $Value.Replace('"','\"')))
-    }
-
-    Start-Process "powershell.exe" -ArgumentList ($args -join " ") -Verb RunAs
-    exit
+    $encoded = Get-ElevationCode $PSCommandPath $Command $Value
+    $hostExe = Join-Path $PSHOME 'powershell.exe'
+    if ($PSVersionTable.PSEdition -eq 'Core') { $hostExe = Join-Path $PSHOME 'pwsh.exe' }
+    $process = Start-Process -FilePath $hostExe -ArgumentList @('-NoProfile', '-EncodedCommand', $encoded) -Verb RunAs -Wait -PassThru
+    exit $process.ExitCode
 }
 
 function Ensure-Administrator {
@@ -96,9 +97,42 @@ function Ensure-Administrator {
 function Ensure-State {
     if (-not (Test-Path -LiteralPath $StateDir)) {
         New-Item -Path $StateDir -ItemType Directory -Force | Out-Null
+        $acl = New-Object Security.AccessControl.DirectorySecurity
+        $acl.SetSecurityDescriptorSddlForm('O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)')
+        Set-Acl -LiteralPath $StateDir -AclObject $acl
+    }
+    Assert-SafeStatePath $StateDir
+    foreach ($path in @($DomainsFile, $RoutesFile, (Join-Path $StateDir 'state.lock'))) {
+        if (Test-Path -LiteralPath $path) { Assert-SafeStatePath $path }
     }
     if (-not (Test-Path -LiteralPath $DomainsFile)) {
         New-Item -Path $DomainsFile -ItemType File -Force | Out-Null
+    }
+}
+
+function Assert-SafeStatePath([string]$Path) {
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "State path is a link: $Path" }
+    $acl = Get-Acl -LiteralPath $Path
+    $trusted = @('S-1-5-18', 'S-1-5-32-544')
+    if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trusted) {
+        throw "Unsafe state owner: $Path. Archive the old state as Administrator and start with a fresh directory; do not import old route metadata."
+    }
+    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        if ($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -notin $trusted) {
+            throw "Untrusted state permissions: $Path. Archive the old state as Administrator and start with a fresh directory."
+        }
+    }
+}
+
+function Write-StateFile([string]$Path, [string]$Text) {
+    $temp = Join-Path $StateDir ([IO.Path]::GetRandomFileName())
+    try {
+        [IO.File]::WriteAllText($temp, $Text, (New-Object Text.UTF8Encoding($false)))
+        if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($temp, $Path, [NullString]::Value) }
+        else { [IO.File]::Move($temp, $Path) }
+    } finally {
+        if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force }
     }
 }
 
@@ -109,7 +143,8 @@ function Normalize-Domain([string]$Domain) {
     $d = $d -replace ':\d+$',''
     $d = $d.TrimEnd('.')
 
-    if ($d -notmatch '^(\*\.)?([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$') {
+    if ($d.StartsWith('*.')) { throw 'Use an exact hostname; wildcard bypass cannot cover all subdomains.' }
+    if ($d.Length -gt 253 -or $d -notmatch '^([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$') {
         throw "Invalid domain: $Domain"
     }
     return $d
@@ -119,15 +154,15 @@ function Get-Domains {
     Ensure-State
     return @(
         Get-Content -LiteralPath $DomainsFile -ErrorAction SilentlyContinue |
-        ForEach-Object { $_.Trim().ToLowerInvariant() } |
-        Where-Object { $_ } |
+        Where-Object { $_.Trim() } |
+        ForEach-Object { Normalize-Domain $_ } |
         Sort-Object -Unique
     )
 }
 
 function Save-Domains([AllowEmptyCollection()][string[]]$Domains) {
     Ensure-State
-    @($Domains | Sort-Object -Unique) | Set-Content -LiteralPath $DomainsFile -Encoding ASCII
+    Write-StateFile $DomainsFile ((@($Domains | Sort-Object -Unique) -join "`n") + "`n")
 }
 
 function Add-Domain([string]$Domain) {
@@ -156,20 +191,18 @@ function Get-SavedRoutes {
     if (-not (Test-Path -LiteralPath $RoutesFile)) { return @() }
     $raw = Get-Content -LiteralPath $RoutesFile -Raw -ErrorAction SilentlyContinue
     if ([string]::IsNullOrWhiteSpace($raw)) { return @() }
-    try { return @($raw | ConvertFrom-Json) }
+    try {
+        $parsed = $raw | ConvertFrom-Json
+        foreach ($row in $parsed) { $row }
+    }
     catch {
-        Write-Warning "Could not parse saved route state; treating it as empty."
-        return @()
+        throw 'Route state is corrupt. Preserve it for inspection; no routes were changed.'
     }
 }
 
 function Save-Routes([AllowEmptyCollection()][object[]]$Routes) {
     Ensure-State
-    if ($Routes.Count -eq 0) {
-        Remove-Item -LiteralPath $RoutesFile -Force -ErrorAction SilentlyContinue
-        return
-    }
-    $Routes | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $RoutesFile -Encoding UTF8
+    Write-StateFile $RoutesFile (ConvertTo-Json -InputObject @($Routes) -Depth 5)
 }
 
 function Get-WireGuardInterfaceIndexes {
@@ -215,13 +248,14 @@ function Show-KillSwitchWarning {
     Write-Host "  0.0.0.0/1, 128.0.0.0/1, ::/1, 8000::/1"
     Write-Host ""
     Write-Host "No WireGuard configuration was changed by this script."
+    Write-Warning 'The /1 change removes the WireGuard-specific kill switch, including its DNS restrictions. Reconnect the tunnel after editing it manually.'
 }
 
 function Get-NormalGateway([ValidateSet("IPv4","IPv6")][string]$Family) {
     $prefix = if ($Family -eq "IPv4") { "0.0.0.0/0" } else { "::/0" }
     $zeroHop = if ($Family -eq "IPv4") { "0.0.0.0" } else { "::" }
 
-    $candidates = foreach ($route in @(Get-NetRoute -AddressFamily $Family -DestinationPrefix $prefix -ErrorAction SilentlyContinue)) {
+    $candidates = foreach ($route in @(Get-NetRoute -AddressFamily $Family -PolicyStore ActiveStore -ErrorAction Stop | Where-Object DestinationPrefix -eq $prefix)) {
         if ([string]::IsNullOrWhiteSpace([string]$route.NextHop) -or $route.NextHop -eq $zeroHop) { continue }
 
         $iface = Get-NetIPInterface -InterfaceIndex $route.InterfaceIndex -AddressFamily $Family -ErrorAction SilentlyContinue |
@@ -229,6 +263,7 @@ function Get-NormalGateway([ValidateSet("IPv4","IPv6")][string]$Family) {
         if ($null -eq $iface -or $iface.ConnectionState -ne "Connected") { continue }
 
         $adapter = Get-NetAdapter -InterfaceIndex $route.InterfaceIndex -IncludeHidden -ErrorAction SilentlyContinue
+        if ($null -eq $adapter -or -not $adapter.HardwareInterface -or $adapter.Status -ne 'Up') { continue }
         $text = "$($iface.InterfaceAlias) $($adapter.Name) $($adapter.InterfaceDescription)"
         if ($text -match '(?i)wireguard|wintun') { continue }
 
@@ -236,6 +271,7 @@ function Get-NormalGateway([ValidateSet("IPv4","IPv6")][string]$Family) {
             AddressFamily = $Family
             InterfaceIndex = [uint32]$route.InterfaceIndex
             InterfaceAlias = [string]$iface.InterfaceAlias
+            InterfaceGuid = [string]$adapter.InterfaceGuid
             NextHop = [string]$route.NextHop
             Score = [int]$route.RouteMetric + [int]$iface.InterfaceMetric
         }
@@ -245,33 +281,7 @@ function Get-NormalGateway([ValidateSet("IPv4","IPv6")][string]$Family) {
 }
 
 function Get-NamesForPattern([string]$Pattern) {
-    if (-not $Pattern.StartsWith("*.")) { return @($Pattern) }
-
-    $apex = $Pattern.Substring(2)
-    $names = New-Object System.Collections.Generic.List[string]
-    $names.Add($apex)
-
-    try {
-        foreach ($entry in @(Get-DnsClientCache -ErrorAction SilentlyContinue)) {
-            $name = $null
-            foreach ($prop in @("Entry","Name","RecordName")) {
-                if ($entry.PSObject.Properties.Name -contains $prop) {
-                    $name = [string]$entry.$prop
-                    if ($name) { break }
-                }
-            }
-            if (-not $name) { continue }
-
-            $name = $name.TrimEnd('.').ToLowerInvariant()
-            if ($name -eq $apex -or $name.EndsWith(".$apex")) {
-                if (-not $names.Contains($name)) { $names.Add($name) }
-            }
-        }
-    } catch {
-        # DNS cache enumeration is optional.
-    }
-
-    return @($names | Sort-Object -Unique)
+    return @(Normalize-Domain $Pattern)
 }
 
 function Resolve-Pattern([string]$Pattern) {
@@ -284,6 +294,13 @@ function Resolve-Pattern([string]$Pattern) {
                     if (-not ($record.PSObject.Properties.Name -contains "IPAddress")) { continue }
                     $ip = [string]$record.IPAddress
                     if (-not $ip) { continue }
+                    $parsed = $null
+                    if (-not [Net.IPAddress]::TryParse($ip, [ref]$parsed)) { continue }
+                    if ([Net.IPAddress]::IsLoopback($parsed) -or $parsed.IsIPv4MappedToIPv6 -or
+                        $parsed.IsIPv6LinkLocal -or $parsed.IsIPv6Multicast -or $ip -in @('0.0.0.0','::')) { continue }
+                    if ($parsed.AddressFamily -eq 'InterNetwork' -and
+                        ($parsed.GetAddressBytes()[0] -ge 224 -or $ip -like '169.254.*')) { continue }
+                    $ip = $parsed.ToString()
 
                     $family = if ($ip -match ':') { "IPv6" } else { "IPv4" }
                     $results += [PSCustomObject]@{
@@ -303,37 +320,58 @@ function Resolve-Pattern([string]$Pattern) {
 }
 
 function Remove-OwnedRoutes {
+    $remaining = @()
     foreach ($saved in @(Get-SavedRoutes)) {
         try {
+            foreach ($field in @('BootId','RouteMetric','InterfaceGuid','DestinationPrefix','InterfaceIndex','NextHop')) {
+                if ($saved.PSObject.Properties.Name -notcontains $field) {
+                    throw 'Legacy or incomplete ownership metadata; inspect manually or reboot to expire temporary routes.'
+                }
+            }
+            if ($saved.BootId -ne $BootId) { continue }
+            $parts = ([string]$saved.DestinationPrefix).Split('/')
+            $address = $null
+            if ($parts.Count -ne 2 -or -not [Net.IPAddress]::TryParse($parts[0], [ref]$address) -or
+                $parts[1] -ne $(if ($address.AddressFamily -eq 'InterNetwork') { '32' } else { '128' }) -or
+                [int]$saved.RouteMetric -lt 20000 -or [int]$saved.RouteMetric -ge 60000) {
+                throw 'Invalid ownership metadata; refusing route deletion.'
+            }
+            $adapter = Get-NetAdapter -IncludeHidden -ErrorAction Stop | Where-Object ifIndex -eq ([uint32]$saved.InterfaceIndex)
+            if ($null -eq $adapter -or [string]$adapter.InterfaceGuid -ne [string]$saved.InterfaceGuid) {
+                Write-Warning "Interface changed; leaving $($saved.DestinationPrefix) untouched."
+                continue
+            }
             foreach ($route in @(
-                Get-NetRoute -InterfaceIndex ([uint32]$saved.InterfaceIndex) `
-                    -DestinationPrefix ([string]$saved.DestinationPrefix) `
-                    -ErrorAction SilentlyContinue |
-                Where-Object { $_.NextHop -eq [string]$saved.NextHop }
+                Get-NetRoute -PolicyStore ActiveStore -ErrorAction Stop |
+                Where-Object { $_.InterfaceIndex -eq [uint32]$saved.InterfaceIndex -and
+                    $_.DestinationPrefix -eq [string]$saved.DestinationPrefix -and
+                    $_.NextHop -eq [string]$saved.NextHop -and
+                    $_.RouteMetric -eq [int]$saved.RouteMetric -and $_.Protocol -eq 'NetMgmt' }
             )) {
                 Remove-NetRoute -InputObject $route -Confirm:$false -ErrorAction Stop
             }
         } catch {
+            $remaining += $saved
             Write-Warning "Could not remove $($saved.DestinationPrefix): $($_.Exception.Message)"
         }
     }
-    Save-Routes @()
+    Save-Routes $remaining
+    if ($remaining.Count -gt 0) { throw 'Some routes could not be cleaned up. State was retained; retry clear before refresh/reset.' }
 }
 
 function New-BypassRoute($Item, $Gateway) {
     $prefix = if ($Item.AddressFamily -eq "IPv4") { "$($Item.IPAddress)/32" } else { "$($Item.IPAddress)/128" }
 
     $existing = @(
-        Get-NetRoute -InterfaceIndex ([uint32]$Gateway.InterfaceIndex) `
-            -DestinationPrefix $prefix -ErrorAction SilentlyContinue |
-        Where-Object { $_.NextHop -eq [string]$Gateway.NextHop }
+        Get-NetRoute -PolicyStore ActiveStore -ErrorAction Stop | Where-Object DestinationPrefix -eq $prefix
     )
-    if ($existing.Count -gt 0) { return $null }
+    if ($existing.Count -gt 0) { Write-Warning "Existing host route left untouched: $prefix"; return $null }
 
     New-NetRoute -DestinationPrefix $prefix `
         -InterfaceIndex ([uint32]$Gateway.InterfaceIndex) `
         -NextHop ([string]$Gateway.NextHop) `
         -RouteMetric $RouteMetric `
+        -Protocol NetMgmt `
         -PolicyStore ActiveStore `
         -ErrorAction Stop | Out-Null
 
@@ -345,7 +383,10 @@ function New-BypassRoute($Item, $Gateway) {
         DestinationPrefix = $prefix
         InterfaceIndex = [uint32]$Gateway.InterfaceIndex
         InterfaceAlias = [string]$Gateway.InterfaceAlias
+        InterfaceGuid = [string]$Gateway.InterfaceGuid
         NextHop = [string]$Gateway.NextHop
+        RouteMetric = $RouteMetric
+        BootId = $BootId
         Created = (Get-Date).ToString("o")
     }
 }
@@ -353,13 +394,14 @@ function New-BypassRoute($Item, $Gateway) {
 function Refresh-Routes {
     $domains = @(Get-Domains)
     if ($domains.Count -eq 0) {
+        Remove-OwnedRoutes
         Write-Host "No domains configured."
         return
     }
 
     if (Test-WireGuardKillSwitchRoute) {
         Show-KillSwitchWarning
-        return
+        throw 'Bypass blocked by a detected WireGuard /0 route. Make the manual client change shown above.'
     }
 
     $gateway4 = Get-NormalGateway IPv4
@@ -369,28 +411,45 @@ function Refresh-Routes {
         throw "No normal non-WireGuard default gateway was found."
     }
 
+    # Resolve before removing working routes; a failed hostname must not silently
+    # replace the whole bypass set with an empty or partial result.
+    $resolved = @()
+    foreach ($domain in $domains) {
+        Write-Host "Resolving: $domain"
+        $items = @(Resolve-Pattern $domain)
+        if ($items.Count -eq 0) { throw "No usable DNS addresses for $domain. Existing routes kept; check DNS or remove this hostname and retry." }
+        $usable = @($items | Where-Object { ($_.AddressFamily -eq 'IPv4' -and $null -ne $gateway4) -or ($_.AddressFamily -eq 'IPv6' -and $null -ne $gateway6) })
+        if ($usable.Count -eq 0) { throw "No physical gateway for the addresses of $domain. Existing routes kept; check your network connection." }
+        $resolved += $items
+    }
     Remove-OwnedRoutes
 
     $created = @()
-    foreach ($domain in $domains) {
-        Write-Host "Resolving: $domain"
-        foreach ($item in @(Resolve-Pattern $domain)) {
+    $failed = $false
+    foreach ($item in @($resolved | Sort-Object AddressFamily,IPAddress -Unique)) {
             $gateway = if ($item.AddressFamily -eq "IPv4") { $gateway4 } else { $gateway6 }
-            if ($null -eq $gateway) { continue }
+            if ($null -eq $gateway) { Write-Warning "No physical gateway for $($item.AddressFamily); skipped $($item.IPAddress)."; continue }
 
             try {
                 $route = New-BypassRoute $item $gateway
-                if ($null -ne $route) { $created += $route }
             } catch {
+                $failed = $true
                 Write-Warning "Route failed for $($item.Name) ($($item.IPAddress)): $($_.Exception.Message)"
+                continue
+            }
+            if ($null -ne $route) {
+                $created += $route
+                # Persist each success, not just the final batch. A forced process
+                # termination in the add/save gap can still leave an orphan.
+                Save-Routes $created
             }
         }
-    }
 
     Save-Routes $created
     Write-Host ""
     Write-Host "Created bypass routes: $($created.Count)"
     Write-Host "Run 'refresh' again if DNS addresses change."
+    if ($failed) { throw 'Some bypass routes failed. Successful routes remain tracked; check the warnings and retry refresh.' }
 }
 
 function Show-List {
@@ -478,7 +537,13 @@ function Show-Menu {
 
 Ensure-Administrator
 Ensure-State
+$BootId = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o')
+$stateLock = $null
+try {
+    $stateLock = [IO.File]::Open((Join-Path $StateDir 'state.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+} catch { throw 'Another helper may be running, or the state lock is inaccessible. Close the other helper and retry.' }
 
+try {
 switch ($Command) {
     "menu" { Show-Menu }
     "add" {
@@ -508,3 +573,4 @@ switch ($Command) {
         Write-Host "All saved domains and tracked routes removed."
     }
 }
+} finally { $stateLock.Dispose() }

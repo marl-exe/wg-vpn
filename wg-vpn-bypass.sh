@@ -12,12 +12,16 @@
 #
 
 set -Eeuo pipefail
+export LC_ALL=C
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+umask 077
 
 STATE_DIR="/var/lib/wg-vpn-bypass"
 DOMAINS_FILE="${STATE_DIR}/domains.txt"
 ROUTES_FILE="${STATE_DIR}/routes.tsv"
-LOCK_FILE="/run/lock/wg-vpn-bypass.lock"
-ROUTE_METRIC="5"
+LOCK_FILE="${STATE_DIR}/state.lock"
+BOOT_FILE="${STATE_DIR}/boot-id"
+ROUTE_METRIC="$((20000 + RANDOM))"
 ROUTE_PROTO="186"
 
 CHATGPT_PRESET=(
@@ -46,19 +50,44 @@ ensure_root() {
   fi
 
   if command -v sudo >/dev/null 2>&1; then
-    exec sudo -- "$0" "$@"
+    local self
+    self="$(readlink -f -- "${BASH_SOURCE[0]}")"
+    exec sudo -- /bin/bash -- "$self" "$@"
   fi
 
   die "Run this script as root (for example: sudo ./wg-vpn-bypass.sh)"
 }
 
 ensure_state() {
-  install -d -m 0755 "$STATE_DIR"
-  touch "$DOMAINS_FILE"
-  chmod 0644 "$DOMAINS_FILE"
+  local path
+  for path in /var /var/lib "$STATE_DIR"; do
+    [[ ! -L "$path" ]] || die "State path is a symlink: $path"
+    if [[ -e "$path" ]]; then
+      [[ -d "$path" && $(stat -c %u -- "$path") == 0 ]] || die "Unsafe state directory: $path"
+      (( (8#$(stat -c %a -- "$path") & 0022) == 0 )) || die "State directory is writable by other users: $path"
+    fi
+  done
+  mkdir -p -- "$STATE_DIR"
+  chmod 0700 "$STATE_DIR"
+  for path in "$DOMAINS_FILE" "$ROUTES_FILE" "$LOCK_FILE" "$BOOT_FILE"; do
+    [[ ! -L "$path" ]] || die "State file is a symlink: $path"
+    if [[ -e "$path" ]]; then
+      [[ -f "$path" && $(stat -c %u -- "$path") == 0 && $(stat -c %h -- "$path") == 1 ]] || die "Unsafe state file: $path"
+      (( (8#$(stat -c %a -- "$path") & 0022) == 0 )) || die "State file is writable by other users: $path"
+    fi
+    touch -- "$path"
+    chmod 0600 "$path"
+  done
+}
 
-  install -d -m 0755 "$(dirname "$LOCK_FILE")"
-  touch "$LOCK_FILE"
+check_boot() {
+  local boot
+  boot="$(cat /proc/sys/kernel/random/boot_id)"
+  if [[ $(cat "$BOOT_FILE") != "$boot" ]]; then
+    [[ ! -s "$ROUTES_FILE" ]] || printf 'Discarding old/legacy route metadata without deleting any routes. Reboot clears temporary orphan routes.\n' >&2
+    : >"$ROUTES_FILE"
+    printf '%s\n' "$boot" >"$BOOT_FILE"
+  fi
 }
 
 normalize_domain() {
@@ -70,7 +99,7 @@ normalize_domain() {
   domain="${domain%%:*}"
   domain="${domain%.}"
 
-  [[ -n "$domain" ]] || die "Domain cannot be empty."
+  [[ -n "$domain" && ${#domain} -le 253 ]] || die "Domain must contain 1-253 characters."
 
   if [[ "$domain" == \*.* ]]; then
     die "Linux helper requires exact hostnames; wildcards such as *.example.com are not supported."
@@ -84,14 +113,18 @@ normalize_domain() {
 }
 
 get_domains() {
-  awk 'NF { print tolower($0) }' "$DOMAINS_FILE" | sort -u
+  local domain
+  while IFS= read -r domain || [[ -n "$domain" ]]; do
+    [[ -n "$domain" ]] || continue
+    normalize_domain "$domain" || return 1
+  done <"$DOMAINS_FILE" | sort -u
 }
 
 save_domains() {
   local tmp
   tmp="$(mktemp "${STATE_DIR}/domains.XXXXXX")"
   cat | awk 'NF { print tolower($0) }' | sort -u >"$tmp"
-  chmod 0644 "$tmp"
+  chmod 0600 "$tmp"
   mv -f "$tmp" "$DOMAINS_FILE"
 }
 
@@ -147,6 +180,18 @@ is_wireguard_dev() {
   return 1
 }
 
+usable_dev() {
+  local dev="$1" details
+  [[ "$dev" =~ ^[a-zA-Z0-9_.:-]{1,15}$ ]] || return 1
+  is_wireguard_dev "$dev" && return 1
+  details="$(ip -d -o link show dev "$dev")" || return 1
+  [[ "$details" != *'state DOWN'* && "$details" != *'NO-CARRIER'* ]] || return 1
+  [[ "$details" != *'wireguard'* && "$details" != *' tun '* && "$details" != *' tap '* ]] || return 1
+  # Conservative: a physical/VM Ethernet or Wi-Fi device has a sysfs device.
+  # Bridges, PPP and other ambiguous virtual uplinks need a different design.
+  [[ -e "/sys/class/net/$dev/device" ]]
+}
+
 get_default_route() {
   local family="$1"
   local line dev via metric token prev
@@ -159,7 +204,7 @@ get_default_route() {
   fi
 
   while IFS= read -r line; do
-    [[ -n "$line" ]] || continue
+    [[ "$line" == default\ * && "$line" != *' linkdown'* && "$line" != *' dead'* && "$line" != *' nexthop '* && "$line" != *' from '* ]] || continue
 
     dev=""
     via=""
@@ -177,6 +222,8 @@ get_default_route() {
 
     [[ -n "$dev" ]] || continue
     is_wireguard_dev "$dev" && continue
+    usable_dev "$dev" || continue
+    [[ -z "$metric" || "$metric" =~ ^[0-9]{1,10}$ ]] || continue
 
     if [[ "$line" == *" unreachable "* || "$line" == unreachable* ]]; then
       continue
@@ -188,7 +235,7 @@ get_default_route() {
 
     while IFS= read -r current; do
       current_metric="${current##*|}"
-      [[ -n "$current_metric" ]] || current_metric=0
+      [[ -n "$current_metric" ]] && current_metric=$((10#$current_metric)) || current_metric=0
 
       if (( current_metric < best_metric )); then
         best="$current"
@@ -210,29 +257,43 @@ resolve_ipv4() {
 resolve_ipv6() {
   local domain="$1"
   getent ahostsv6 "$domain" 2>/dev/null |
-    awk '$1 ~ /:/ { print $1 }' |
+    awk '$1 ~ /:/ && $1 !~ /\./ && tolower($1) !~ /^::ffff:/ { print $1 }' |
     sort -u
 }
 
-route_matches_owned() {
-  local family="$1" prefix="$2" via="$3" dev="$4"
-  local output
-
-  if [[ "$family" == "4" ]]; then
-    output="$(ip -4 route show table main exact "$prefix" 2>/dev/null || true)"
+valid_address() {
+  local family="$1" address="$2" part
+  local -a parts
+  if [[ "$family" == 4 ]]; then
+    [[ "$address" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
+    IFS=. read -r -a parts <<<"$address"
+    for part in "${parts[@]}"; do ((10#$part <= 255)) || return 1; done
   else
-    output="$(ip -6 route show table main exact "$prefix" 2>/dev/null || true)"
+    [[ "$address" =~ ^[0-9a-fA-F:]+$ && "$address" == *:* && "$address" != *:::* ]] || return 1
+    local rest="${address#*::}"
+    [[ "$rest" != *::* ]] || return 1
+    IFS=: read -r -a parts <<<"$address"
+    local count=0
+    for part in "${parts[@]}"; do
+      [[ -n "$part" ]] || continue
+      [[ ${#part} -le 4 ]] || return 1
+      ((count+=1))
+    done
+    if [[ "$address" == *::* ]]; then ((count < 8)) || return 1
+    else [[ "$address" != :* && "$address" != *: && $count == 8 ]] || return 1; fi
   fi
+}
 
-  [[ -n "$output" ]] || return 1
-  grep -Fq -- "dev $dev" <<<"$output" || return 1
-  grep -Eq "(^| )proto ${ROUTE_PROTO}( |$)" <<<"$output" || return 1
-
-  if [[ -n "$via" ]]; then
-    grep -Fq -- "via $via" <<<"$output" || return 1
-  fi
-
-  return 0
+route_matches_owned() {
+  local family="$1" prefix="$2" via="$3" dev="$4" metric="$5" output
+  output="$(ip -N -"$family" route show table main exact "$prefix")" || return 2
+  # Match every attribute on the SAME line, using exact fields (eth1 != eth10).
+  awk -v via="$via" -v dev="$dev" -v metric="$metric" -v proto="$ROUTE_PROTO" '
+    { d=""; v=""; m=""; p="";
+      for(i=1;i<NF;i++) { if($i=="dev") d=$(i+1); if($i=="via") v=$(i+1);
+        if($i=="metric") m=$(i+1); if($i=="proto") p=$(i+1) }
+      if(d==dev && v==via && m==metric && p==proto) found=1
+    } END {exit !found}' <<<"$output"
 }
 
 remove_owned_routes() {
@@ -241,32 +302,33 @@ remove_owned_routes() {
     return
   }
 
-  local family prefix via dev
+  local family prefix via dev metric extra tmp rc failed=0
+  tmp="$(mktemp "${STATE_DIR}/routes.XXXXXX")"
 
-  while IFS='|' read -r family prefix via dev; do
-    [[ -n "$family" && -n "$prefix" && -n "$dev" ]] || continue
+  while IFS='|' read -r family prefix via dev metric extra; do
+    [[ "$family" =~ ^[46]$ && "$dev" =~ ^[a-zA-Z0-9_.:-]{1,15}$ && "$metric" =~ ^[0-9]{5}$ && -z "$extra" ]] || die 'Invalid route state; no broad deletion will be attempted.'
+    [[ ( "$family" == 4 && "$prefix" == */32 ) || ( "$family" == 6 && "$prefix" == */128 ) ]] || die 'Invalid host prefix in route state.'
+    valid_address "$family" "${prefix%/*}" || die 'Invalid address in route state.'
+    [[ -z "$via" ]] || valid_address "$family" "$via" || die 'Invalid gateway in route state.'
 
-    if ! route_matches_owned "$family" "$prefix" "$via" "$dev"; then
-      printf 'Skipping unowned/changed route: %s\n' "$prefix" >&2
+    rc=0
+    route_matches_owned "$family" "$prefix" "$via" "$dev" "$metric" || rc=$?
+    if ((rc == 1)); then
+      printf 'Skipping absent/changed route: %s\n' "$prefix" >&2
       continue
     fi
-
-    if [[ "$family" == "4" ]]; then
-      if [[ -n "$via" ]]; then
-        ip -4 route del table main "$prefix" via "$via" dev "$dev" proto "$ROUTE_PROTO" 2>/dev/null || true
-      else
-        ip -4 route del table main "$prefix" dev "$dev" proto "$ROUTE_PROTO" 2>/dev/null || true
-      fi
-    else
-      if [[ -n "$via" ]]; then
-        ip -6 route del table main "$prefix" via "$via" dev "$dev" proto "$ROUTE_PROTO" 2>/dev/null || true
-      else
-        ip -6 route del table main "$prefix" dev "$dev" proto "$ROUTE_PROTO" 2>/dev/null || true
-      fi
+    local -a args=(ip -"$family" route del table main "$prefix")
+    [[ -z "$via" ]] || args+=(via "$via")
+    args+=(dev "$dev" proto "$ROUTE_PROTO" metric "$metric")
+    if ((rc != 0)) || ! "${args[@]}"; then
+      printf '%s|%s|%s|%s|%s\n' "$family" "$prefix" "$via" "$dev" "$metric" >>"$tmp"
+      failed=1
+      printf 'Cleanup failed for %s; retained for retry.\n' "$prefix" >&2
     fi
   done <"$ROUTES_FILE"
 
-  : >"$ROUTES_FILE"
+  mv -f -- "$tmp" "$ROUTES_FILE"
+  ((failed == 0)) || die 'Some routes could not be removed. Retry clear before refresh/reset.'
 }
 
 add_route() {
@@ -275,38 +337,46 @@ add_route() {
 
   if [[ "$family" == "4" ]]; then
     prefix="${ipaddr}/32"
-    if ip -4 route show table main exact "$prefix" | grep -q .; then
+    local existing
+    existing="$(ip -4 route show table main exact "$prefix")" || return 1
+    if [[ -n "$existing" ]]; then
       printf 'Skipping existing route: %s\n' "$prefix"
       return
     fi
 
     if [[ -n "$via" ]]; then
-      ip -4 route add table main "$prefix" via "$via" dev "$dev" metric "$ROUTE_METRIC" proto "$ROUTE_PROTO"
+      ip -4 route add table main "$prefix" via "$via" dev "$dev" metric "$ROUTE_METRIC" proto "$ROUTE_PROTO" || return 1
     else
-      ip -4 route add table main "$prefix" dev "$dev" metric "$ROUTE_METRIC" proto "$ROUTE_PROTO"
+      ip -4 route add table main "$prefix" dev "$dev" metric "$ROUTE_METRIC" proto "$ROUTE_PROTO" || return 1
     fi
   else
     prefix="${ipaddr}/128"
-    if ip -6 route show table main exact "$prefix" | grep -q .; then
+    local existing
+    existing="$(ip -6 route show table main exact "$prefix")" || return 1
+    if [[ -n "$existing" ]]; then
       printf 'Skipping existing route: %s\n' "$prefix"
       return
     fi
 
     if [[ -n "$via" ]]; then
-      ip -6 route add table main "$prefix" via "$via" dev "$dev" metric "$ROUTE_METRIC" proto "$ROUTE_PROTO"
+      ip -6 route add table main "$prefix" via "$via" dev "$dev" metric "$ROUTE_METRIC" proto "$ROUTE_PROTO" || return 1
     else
-      ip -6 route add table main "$prefix" dev "$dev" metric "$ROUTE_METRIC" proto "$ROUTE_PROTO"
+      ip -6 route add table main "$prefix" dev "$dev" metric "$ROUTE_METRIC" proto "$ROUTE_PROTO" || return 1
     fi
   fi
 
-  printf '%s|%s|%s|%s\n' "$family" "$prefix" "$via" "$dev" >>"$ROUTES_FILE"
+  printf '%s|%s|%s|%s|%s\n' "$family" "$prefix" "$via" "$dev" "$ROUTE_METRIC" >>"$ROUTES_FILE"
 }
 
 refresh_routes() {
   local -a domains
-  mapfile -t domains < <(get_domains)
+  local domain_text
+  domain_text="$(get_domains)" || die 'Invalid saved hostname; fix domains.txt before refreshing.'
+  domains=()
+  if [[ -n "$domain_text" ]]; then mapfile -t domains <<<"$domain_text"; fi
 
   if (("${#domains[@]}" == 0)); then
+    remove_owned_routes
     printf 'No domains configured.\n'
     return
   fi
@@ -332,28 +402,35 @@ refresh_routes() {
     printf 'IPv6 gateway: %s%s\n' "$dev6" "${via6:+ via $via6}"
   fi
 
-  remove_owned_routes
-
-  local domain ip count=0
+  local domain ip addresses found family plan
+  plan="$(mktemp "${STATE_DIR}/plan.XXXXXX")"
   for domain in "${domains[@]}"; do
     printf 'Resolving: %s\n' "$domain"
-
-    if [[ -n "$route4" ]]; then
+    found=0
+    for family in 4 6; do
+      [[ "$family" == 4 && -z "$route4" ]] && continue
+      [[ "$family" == 6 && -z "$route6" ]] && continue
+      addresses="$(resolve_ipv"$family" "$domain" || true)"
       while IFS= read -r ip; do
         [[ -n "$ip" ]] || continue
-        add_route 4 "$ip" "$via4" "$dev4"
-        ((count+=1))
-      done < <(resolve_ipv4 "$domain")
-    fi
-
-    if [[ -n "$route6" ]]; then
-      while IFS= read -r ip; do
-        [[ -n "$ip" ]] || continue
-        add_route 6 "$ip" "$via6" "$dev6"
-        ((count+=1))
-      done < <(resolve_ipv6 "$domain")
+        valid_address "$family" "$ip" || continue
+        [[ "$ip" != 127.* && "$ip" != 0.* && "$ip" != 169.254.* && "$ip" != :: && "$ip" != ::1 && "$ip" != [fF][fF]* && "$ip" != [fF][eE][89aAbB]* ]] || continue
+        if [[ "$family" == 4 ]]; then ((10#${ip%%.*} < 224)) || continue; fi
+        printf '%s|%s\n' "$family" "$ip" >>"$plan"
+        found=1
+      done <<<"$addresses"
+    done
+    if ((found == 0)); then
+      rm -f -- "$plan"
+      die "No usable DNS addresses/gateway for $domain. Existing routes kept; check DNS or remove this hostname."
     fi
   done
+  remove_owned_routes
+  while IFS='|' read -r family ip; do
+    if [[ "$family" == 4 ]]; then add_route 4 "$ip" "$via4" "$dev4"
+    else add_route 6 "$ip" "$via6" "$dev6"; fi
+  done <"$plan"
+  rm -f -- "$plan"
 
   printf '\nTracked bypass routes: %d\n' "$(awk 'NF {c++} END {print c+0}' "$ROUTES_FILE")"
   printf 'Run refresh again if DNS addresses change.\n'
@@ -427,12 +504,12 @@ show_menu() {
         read -r -p 'Exact domain: ' domain
         add_domain "$domain"
         read -r -p 'Refresh routes now? [Y/n]: ' answer
-        [[ ! "$answer" =~ ^[Nn]$ ]] && refresh_routes
+        if [[ ! "$answer" =~ ^[Nn]$ ]]; then refresh_routes; fi
         ;;
       2)
         add_chatgpt_preset
         read -r -p 'Refresh routes now? [Y/n]: ' answer
-        [[ ! "$answer" =~ ^[Nn]$ ]] && refresh_routes
+        if [[ ! "$answer" =~ ^[Nn]$ ]]; then refresh_routes; fi
         ;;
       3)
         read -r -p 'Exact domain to remove: ' domain
@@ -448,7 +525,7 @@ show_menu() {
         ;;
       8)
         read -r -p 'Remove all saved domains and tracked routes? [y/N]: ' answer
-        [[ "$answer" =~ ^[Yy]$ ]] && reset_all
+        if [[ "$answer" =~ ^[Yy]$ ]]; then reset_all; fi
         ;;
       9) return ;;
       *) printf 'Invalid selection.\n' ;;
@@ -468,6 +545,7 @@ main() {
 
   exec 9>"$LOCK_FILE"
   flock -x 9
+  check_boot
 
   local command="${1:-menu}"
   local value="${2:-}"
@@ -502,4 +580,4 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi
