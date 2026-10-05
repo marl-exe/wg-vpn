@@ -9,6 +9,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/../wg-vpn-bypass.sh"
 test_ns="wg-bypass-test-$$"
 test_dir="$(mktemp -d)"
 created_ns=0
+ip() { command ip -netns "$test_ns" "$@"; }
 cleanup() {
   if ((created_ns)); then command ip netns delete "$test_ns"; fi
   rm -rf -- "$test_dir"
@@ -16,7 +17,6 @@ cleanup() {
 trap cleanup EXIT
 command ip netns add "$test_ns"
 created_ns=1
-ip() { command ip -netns "$test_ns" "$@"; }
 STATE_DIR="$test_dir"
 ROUTES_FILE="$test_dir/routes.tsv"
 : >"$ROUTES_FILE"
