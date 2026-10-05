@@ -27,7 +27,7 @@ jobs:
 
       - name: ShellCheck
         run: |
-          shellcheck --severity=error -e SC1090,SC1091 install.sh uninstall.sh bin/wg-vpn lib/*.sh tests/*.sh desktop/wg-vpn-bypass.sh
+          shellcheck --severity=error -e SC1090,SC1091 install.sh uninstall.sh bin/wg-vpn lib/*.sh tests/*.sh tests/desktop/*.sh desktop/wg-vpn-bypass.sh
 
       - name: Safety regression checks
         run: |
