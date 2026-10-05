@@ -42,7 +42,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$VerbosePreference = "Continue"
+$VerbosePreference = "SilentlyContinue"
 
 $StateDir   = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) "WG-VPN-Bypass"
 $DomainsFile = Join-Path $StateDir "domains.txt"
@@ -60,7 +60,6 @@ $ChatGPTPreset = @(
     "auth.openai.com",
     "auth0.openai.com",
     "chat.openai.com",
-    "desktop.chat.openai.com",
     "setup.auth.openai.com",
     "cdn.openaimerge.com"
 )
