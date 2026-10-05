@@ -30,7 +30,6 @@ CHATGPT_PRESET=(
   "auth.openai.com"
   "auth0.openai.com"
   "chat.openai.com"
-  "desktop.chat.openai.com"
   "setup.auth.openai.com"
   "cdn.openaimerge.com"
 )
