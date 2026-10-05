@@ -5,7 +5,7 @@ set -Eeuo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 [[ $EUID == 0 ]] || { echo 'Run with sudo on a disposable Linux test runner.' >&2; exit 1; }
 # shellcheck source=../wg-vpn-bypass.sh
-source "$(dirname "${BASH_SOURCE[0]}")/../wg-vpn-bypass.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../../desktop/wg-vpn-bypass.sh"
 test_ns="wg-bypass-test-$$"
 test_dir="$(mktemp -d)"
 created_ns=0

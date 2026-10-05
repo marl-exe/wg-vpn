@@ -3,7 +3,8 @@
 param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$path = Join-Path (Split-Path $PSScriptRoot -Parent) 'wg-vpn-bypass.ps1'
+$repoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+$path = Join-Path $repoRoot 'desktop\wg-vpn-bypass.ps1'
 $tokens = $null; $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw ($errors | Out-String) }

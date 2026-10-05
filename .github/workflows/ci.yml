@@ -18,26 +18,26 @@ jobs:
           bash -n install.sh
           bash -n uninstall.sh
           bash -n bin/wg-vpn
-          bash -n wg-vpn-bypass.sh
-          bash -n tests/bypass.sh
-          bash -n tests/bypass-netns.sh
+          bash -n desktop/wg-vpn-bypass.sh
+          bash -n tests/desktop/bypass.sh
+          bash -n tests/desktop/bypass-netns.sh
           for file in lib/*.sh; do
             bash -n "$file"
           done
 
       - name: ShellCheck
         run: |
-          shellcheck --severity=error -e SC1090,SC1091 install.sh uninstall.sh bin/wg-vpn lib/*.sh tests/*.sh wg-vpn-bypass.sh
+          shellcheck --severity=error -e SC1090,SC1091 install.sh uninstall.sh bin/wg-vpn lib/*.sh tests/*.sh tests/desktop/*.sh desktop/wg-vpn-bypass.sh
 
       - name: Safety regression checks
         run: |
           sudo bash tests/safety.sh
 
       - name: Client bypass fixtures
-        run: bash tests/bypass.sh
+        run: bash tests/desktop/bypass.sh
 
       - name: Client bypass kernel routing (isolated namespace)
-        run: sudo bash tests/bypass-netns.sh
+        run: sudo bash tests/desktop/bypass-netns.sh
 
   windows-bypass:
     runs-on: windows-latest
@@ -45,7 +45,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Windows PowerShell 5.1 offline checks
         shell: powershell
-        run: ./tests/bypass.ps1
+        run: ./tests/desktop/bypass.ps1
       - name: PowerShell 7 offline checks
         shell: pwsh
-        run: ./tests/bypass.ps1
+        run: ./tests/desktop/bypass.ps1

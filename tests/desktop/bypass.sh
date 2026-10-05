@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 # shellcheck source=../wg-vpn-bypass.sh
-source "$(dirname "${BASH_SOURCE[0]}")/../wg-vpn-bypass.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/../../desktop/wg-vpn-bypass.sh"
 fixture_dir="$(mktemp -d)"
 trap 'rm -rf -- "$fixture_dir"' EXIT
 STATE_DIR="$fixture_dir"
