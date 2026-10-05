@@ -31,4 +31,10 @@ Reviewed draft PR #1 from commit `9d8d7ead5432a61f34675f6076c228c27476d166` on 2
 - CI includes native PowerShell 5.1/7 checks, Bash syntax, ShellCheck, offline fixtures, existing server safety tests and isolated Linux kernel routing tests. CI outcomes are reported separately after the branch is pushed.
 - No production/workstation route changes or live VPN connectivity tests were performed. No application build is applicable to standalone interpreted helpers.
 
+## Live Windows validation
+
+A real Windows client test on 2026-10-05 confirmed the intended IPv4 bypass path: with `AllowedIPs = 0.0.0.0/1, 128.0.0.0/1`, the helper detected the normal physical IPv4 gateway, created 16 IPv4 bypass routes, and ChatGPT became accessible while WireGuard remained connected. On the same client, adding `::/1, 8000::/1` caused ChatGPT access to fail because no usable physical IPv6 gateway existed for the bypass. The Windows README therefore recommends IPv4-only split-default routing by default and treats IPv6 as opt-in only when native physical IPv6 is confirmed.
+
+The live preset test also found that `desktop.chat.openai.com` returned no usable DNS addresses while the remaining browser-oriented preset names resolved. It has been removed from the built-in preset so one optional desktop-specific hostname cannot block the entire staged refresh.
+
 Primary references: [WireGuard Windows networking](https://git.zx2c4.com/wireguard-windows/about/docs/netquirk.md), [WireGuard policy routing](https://www.wireguard.com/netns/#improved-rule-based-routing), [wg-quick Linux source](https://git.zx2c4.com/wireguard-tools/tree/src/wg-quick/linux.bash), [Microsoft New-NetRoute](https://learn.microsoft.com/en-us/powershell/module/nettcpip/new-netroute).
