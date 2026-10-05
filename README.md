@@ -275,10 +275,10 @@ Fresh installation and normal client creation are runtime-validated on both dire
 
 ## Optional client-side domain bypass
 
-The repository includes optional client-side helpers for users who need selected domains to use the device's normal Internet connection while the rest of their traffic continues through a full-tunnel VPN:
+The optional client-side bypass feature lives under `desktop/`, keeping desktop/client routing helpers separate from the server-side installer and CLI. It is for users who need selected domains to use the device's normal Internet connection while the rest of their traffic continues through a full-tunnel VPN:
 
-- `wg-vpn-bypass.ps1` — Windows 10/11
-- `wg-vpn-bypass.sh` — Linux clients using `iproute2` (targeted at Ubuntu/Debian)
+- `desktop/wg-vpn-bypass.ps1` — Windows 10/11
+- `desktop/wg-vpn-bypass.sh` — Linux clients using `iproute2` (targeted at Ubuntu/Debian)
 
 These helpers change routing only on the client device where they are run. They do **not** modify the VPS, WireGuard server, peer keys, server firewall/NAT rules, or the wg-vpn server installation.
 
@@ -289,7 +289,7 @@ The helpers are optional. Normal wg-vpn users do not need them.
 Run the Windows helper from PowerShell:
 
 ```powershell
-.\wg-vpn-bypass.ps1
+.\desktop\wg-vpn-bypass.ps1
 ```
 
 It requests Administrator elevation when needed. The interactive menu can add/remove domains, install the ChatGPT/OpenAI preset, refresh DNS-derived routes, show status, clear active bypass routes, or reset the helper.
@@ -297,14 +297,14 @@ It requests Administrator elevation when needed. The interactive menu can add/re
 Command-line use is also supported:
 
 ```powershell
-.\wg-vpn-bypass.ps1 add chatgpt.com
-.\wg-vpn-bypass.ps1 add-chatgpt
-.\wg-vpn-bypass.ps1 list
-.\wg-vpn-bypass.ps1 refresh
-.\wg-vpn-bypass.ps1 status
-.\wg-vpn-bypass.ps1 remove chatgpt.com
-.\wg-vpn-bypass.ps1 clear
-.\wg-vpn-bypass.ps1 reset
+.\desktop\wg-vpn-bypass.ps1 add chatgpt.com
+.\desktop\wg-vpn-bypass.ps1 add-chatgpt
+.\desktop\wg-vpn-bypass.ps1 list
+.\desktop\wg-vpn-bypass.ps1 refresh
+.\desktop\wg-vpn-bypass.ps1 status
+.\desktop\wg-vpn-bypass.ps1 remove chatgpt.com
+.\desktop\wg-vpn-bypass.ps1 clear
+.\desktop\wg-vpn-bypass.ps1 reset
 ```
 
 #### Required WireGuard for Windows `AllowedIPs` change
@@ -356,21 +356,21 @@ State is restricted to Administrators/SYSTEM and concurrent runs are locked. Uns
 Run the Linux helper with root privileges:
 
 ```bash
-chmod +x wg-vpn-bypass.sh
-sudo ./wg-vpn-bypass.sh
+chmod +x desktop/wg-vpn-bypass.sh
+sudo ./desktop/wg-vpn-bypass.sh
 ```
 
 Command-line use mirrors the Windows helper:
 
 ```bash
-sudo ./wg-vpn-bypass.sh add chatgpt.com
-sudo ./wg-vpn-bypass.sh add-chatgpt
-sudo ./wg-vpn-bypass.sh list
-sudo ./wg-vpn-bypass.sh refresh
-sudo ./wg-vpn-bypass.sh status
-sudo ./wg-vpn-bypass.sh remove chatgpt.com
-sudo ./wg-vpn-bypass.sh clear
-sudo ./wg-vpn-bypass.sh reset
+sudo ./desktop/wg-vpn-bypass.sh add chatgpt.com
+sudo ./desktop/wg-vpn-bypass.sh add-chatgpt
+sudo ./desktop/wg-vpn-bypass.sh list
+sudo ./desktop/wg-vpn-bypass.sh refresh
+sudo ./desktop/wg-vpn-bypass.sh status
+sudo ./desktop/wg-vpn-bypass.sh remove chatgpt.com
+sudo ./desktop/wg-vpn-bypass.sh clear
+sudo ./desktop/wg-vpn-bypass.sh reset
 ```
 
 On Linux, the helper does **not** require changing `AllowedIPs = 0.0.0.0/0`. Normal `wg-quick` full-tunnel routing uses Linux policy routing, and a more-specific host route in the main routing table can send a selected destination through the normal non-WireGuard gateway.
@@ -419,14 +419,14 @@ These checks are not an immutable ownership token: route APIs cannot distinguish
 No Docker or additional application runtime is required:
 
 ```powershell
-powershell.exe -NoProfile -File tests\bypass.ps1
-pwsh -NoProfile -File tests\bypass.ps1
+powershell.exe -NoProfile -File tests\desktop\bypass.ps1
+pwsh -NoProfile -File tests\desktop\bypass.ps1
 ```
 
 ```bash
-bash -n wg-vpn-bypass.sh
+bash -n desktop/wg-vpn-bypass.sh
 bash tests/bypass.sh
-shellcheck --severity=error -e SC1090,SC1091 wg-vpn-bypass.sh tests/bypass*.sh
+shellcheck --severity=error -e SC1090,SC1091 desktop/wg-vpn-bypass.sh tests/desktop/bypass*.sh
 # Linux test runner only: isolated namespace, no host route/firewall changes
 sudo bash tests/bypass-netns.sh
 ```
