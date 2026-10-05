@@ -272,6 +272,70 @@ The repository also passes Bash syntax checks, ShellCheck, and safety regression
 
 Fresh installation and normal client creation are runtime-validated on both directly addressed VPSes and a real NAT/shared-IPv4 VPS using provider-forwarded UDP ports. NAT endpoint-port behavior is also covered by repository regression tests. Broader runtime testing is still desirable for non-1:1 NAT mappings where the public endpoint port differs from the internal WireGuard listen port, IPv6 deployments, backup/restore under failure conditions, rollback verification, unusual firewall layouts, containerized VPS environments, and other edge-case host configurations.
 
+
+## Optional Windows domain bypass
+
+`wg-vpn-bypass.ps1` is an optional **Windows client-side** helper for users who need selected domains to use their normal Internet connection while the rest of their traffic continues through a full-tunnel VPN.
+
+It changes only the Windows routing table on the PC where it is run. It does **not** modify the VPS, WireGuard server, peer keys, server firewall, or server configuration.
+
+Download it from this repository and run it from an Administrator PowerShell window:
+
+```powershell
+.\wg-vpn-bypass.ps1
+```
+
+The interactive menu can add/remove domains, install the ChatGPT/OpenAI preset, refresh DNS-derived routes, show status, clear active bypass routes, or reset the helper. Command-line use is also supported:
+
+```powershell
+.\wg-vpn-bypass.ps1 add chatgpt.com
+.\wg-vpn-bypass.ps1 add-chatgpt
+.\wg-vpn-bypass.ps1 list
+.\wg-vpn-bypass.ps1 refresh
+.\wg-vpn-bypass.ps1 status
+.\wg-vpn-bypass.ps1 remove chatgpt.com
+.\wg-vpn-bypass.ps1 clear
+.\wg-vpn-bypass.ps1 reset
+```
+
+### Required WireGuard for Windows `AllowedIPs` change
+
+WireGuard for Windows applies special block-untunneled-traffic / kill-switch behavior when a peer contains a `/0` AllowedIP. A route-only bypass therefore requires the equivalent pair of `/1` routes instead.
+
+For a full-tunnel IPv4 + IPv6 client, change:
+
+```ini
+AllowedIPs = 0.0.0.0/0, ::/0
+```
+
+to:
+
+```ini
+AllowedIPs = 0.0.0.0/1, 128.0.0.0/1, ::/1, 8000::/1
+```
+
+For an IPv4-only client, change:
+
+```ini
+AllowedIPs = 0.0.0.0/0
+```
+
+to:
+
+```ini
+AllowedIPs = 0.0.0.0/1, 128.0.0.0/1
+```
+
+These route pairs still cover the full IPv4/IPv6 address space, but they do not activate WireGuard for Windows' special `/0` kill-switch behavior. This means ordinary Windows routing can select a more-specific bypass route.
+
+**Important:** removing the `/0` entries also removes that WireGuard-specific kill-switch behavior. If the tunnel goes down, Windows may use the normal network connection.
+
+The helper stores its domain list and route metadata under `%ProgramData%\WG-VPN-Bypass`. Routes are created in Windows `ActiveStore`, so they are temporary and disappear after reboot. Run `refresh` again when DNS addresses change.
+
+Domain bypass is implemented with IP routes because Windows/WireGuard routing is IP-based, not hostname-based. A wildcard entry can only use subdomains that Windows has already resolved and cached; it cannot enumerate every possible DNS name under a wildcard. Shared CDN IPs may also carry traffic for other hostnames, so bypassing a domain by IP can affect other services that share the same destination address.
+
+This helper is currently for Windows only. Linux clients can use native Linux policy-routing or `wg-quick` routing hooks, but that is intentionally kept separate from this PowerShell helper.
+
 ## License
 
 MIT
