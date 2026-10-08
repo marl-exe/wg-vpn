@@ -1,5 +1,17 @@
 # wg-vpn
 
+> I'm using a $7/year NAT VPS for this. Check out: https://khanwebhost.com/store/nat-vps-flash-sale?aff=236
+>
+> **Looking for a $10.88/year VPS?** Use my referral links:
+>
+> DediRock Promo VPS - New York: https://billing.dedirock.com/aff.php?aff=898&pid=264
+>
+> DediRock Promo VPS - Los Angeles: https://billing.dedirock.com/aff.php?aff=898&pid=265
+>
+> GreenCloudVPS: https://greencloudvps.com/billing/aff.php?aff=10195&gid=68
+>
+> These are referral/affiliate links, which may provide me with a referral benefit if you sign up through them. Pricing and stock can change.
+
 Lightweight, low-latency WireGuard VPN installer and CLI manager for Ubuntu/Debian VPSes.
 
 `wg-vpn` is designed for VPSes that already run other workloads. It installs native WireGuard, makes narrowly scoped networking changes, and provides a CLI manager without requiring Docker, Node.js, Python, a database, a Web UI, or an always-running management daemon.
